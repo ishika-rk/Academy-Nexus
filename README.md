@@ -1,16 +1,26 @@
-# React + Vite
+# Academy Nexus
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Internal assessment management platform for NxtWave placement exams — exam scheduling, student data uploads, assessment config, assessment generation, and results/interview tracking.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- React + Vite (frontend, single-page app in `src/App.jsx`)
+- Firebase Firestore + Firebase Auth (Google + Email/Password)
+- Vercel Serverless Functions (`api/`) for backend integrations
+- Deployed on Vercel
 
-## React Compiler
+## Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+npm install
+npm run dev       # frontend at http://localhost:5173
+npm run dev:api   # vercel dev, for testing api/ functions locally
+```
 
-## Expanding the ESLint configuration
+Copy `.env.example` to `.env.local` and fill in the required values before running `dev:api`.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Structure
+
+- `src/App.jsx` — main app (pages, auth, roles/permissions)
+- `src/firebase.js` — Firebase client config
+- `api/` — serverless functions (Interview Coordinator App integration)
