@@ -1,6 +1,6 @@
 # Academy Nexus
 
-Internal assessment management platform for NxtWave placement exams — exam scheduling, student data uploads, assessment config, assessment generation, and results/interview tracking.
+Internal assessment management platform for NxtWave Academy Program — exam scheduling, student data uploads, assessment config, assessment generation, and results/interview tracking.
 
 ## Stack
 
