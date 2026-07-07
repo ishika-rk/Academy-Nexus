@@ -2987,7 +2987,7 @@ function ConfigLibraryPage({ configEntries, onSaveConfigEntry, onUpdateConfigEnt
 
 // ─── Page: Results ─────────────────────────────────────────────────────────────
 
-const RESULTS_CSV_HEADERS = ["Student ID", "Student Name", "Exam", "Program", "Score", "Status", "Eligible For Interview"];
+const RESULTS_CSV_HEADERS = ["Student ID", "Student Name", "Exam", "Program", "Score", "Status", "Eligible For Offline", "Bucket"];
 const RESULTS_HEADER_MAP = {
   studentId: ["student id", "studentid", "id"],
   name:      ["student name", "name"],
@@ -2995,7 +2995,8 @@ const RESULTS_HEADER_MAP = {
   program:   ["program"],
   score:     ["score"],
   status:    ["status"],
-  eligible:  ["eligible for interview", "eligible"],
+  eligible:  ["eligible for offline", "eligible for interview", "eligible"],
+  bucket:    ["bucket"],
 };
 function getCol(row, field) {
   const names = RESULTS_HEADER_MAP[field];
@@ -3003,6 +3004,10 @@ function getCol(row, field) {
     if (names.includes(h.trim().toLowerCase())) return (row[h] || "").trim();
   }
   return "";
+}
+function normalizeBucket(raw) {
+  const m = raw.trim().toUpperCase().match(/[ABC]$/);
+  return m ? m[0] : "";
 }
 
 function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, role }) {
@@ -3053,6 +3058,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
           score: getCol(row, "score"),
           status: getCol(row, "status"),
           eligible: ["yes", "true", "1", "y"].includes(eligibleRaw),
+          bucket: program === "offline" ? normalizeBucket(getCol(row, "bucket")) : "",
         };
         try {
           const existing = (results || []).find(r => r.studentId === studentId && r.examName === examName);
@@ -3080,7 +3086,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     try {
       const students = tabResults
         .filter(r => selectedIds.has(r.id))
-        .map(r => ({ resultId: r.id, studentId: r.studentId, name: r.name, examId: r.id, examName: r.examName, program: r.program, score: r.score }));
+        .map(r => ({ resultId: r.id, studentId: r.studentId, name: r.name, examId: r.id, examName: r.examName, program: r.program, score: r.score, bucket: r.bucket || "" }));
       await onSendToInterview(students);
       setSelectedIds(new Set());
     } catch (err) {
@@ -3148,7 +3154,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 <th style={thBase}>Exam</th>
                 <th style={thBase}>Score</th>
                 <th style={thBase}>Status</th>
-                <th style={thBase}>Eligible</th>
+                <th style={thBase}>{programTab === "offline" ? "Bucket" : "Eligible for Offline"}</th>
                 <th style={thBase}>Interview</th>
                 {can(role, "results.write") && <th style={{ ...thBase, width: "1px" }} />}
               </tr>
@@ -3157,7 +3163,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               {pageRows.map((r, i) => {
                 const bg = i % 2 === 0 ? "#fff" : C.surfaceAlt;
                 const cell = { verticalAlign: "middle", background: bg, border: `1px solid ${C.border}`, padding: "8px 12px" };
-                const canSelect = r.eligible && r.interviewStatus !== "sent" && r.interviewStatus !== "completed";
+                const canSelect = programTab === "offline" && !!r.bucket && r.interviewStatus !== "sent" && r.interviewStatus !== "completed";
                 return (
                   <tr key={r.id}>
                     <td style={cell}>
@@ -3172,7 +3178,9 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                     <td style={cell}>{r.examName}</td>
                     <td style={cell}>{r.score || "—"}</td>
                     <td style={cell}>{r.status || "—"}</td>
-                    <td style={cell}>{r.eligible ? <Badge color="green">Yes</Badge> : <Badge color="gray">No</Badge>}</td>
+                    <td style={cell}>{programTab === "offline"
+                      ? (r.bucket ? <Badge color="blue">Bucket {r.bucket}</Badge> : <Badge color="gray">—</Badge>)
+                      : (r.eligible ? <Badge color="green">Yes</Badge> : <Badge color="gray">No</Badge>)}</td>
                     <td style={cell}>{interviewStatusBadge(r.interviewStatus)}</td>
                     {can(role, "results.write") && (
                       <td style={cell}>
@@ -3204,7 +3212,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
             <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
               <div style={{ fontWeight: 700, color: C.text, marginBottom: 4 }}>How it works</div>
               1. Click <strong>Template</strong> to download the expected CSV column headers.<br />
-              2. Export the consolidated results from the Looker Studio dashboard and match these columns.<br />
+              2. Export the consolidated results from the Academy Data Studio dashboard and match these columns. For Online rows, "Eligible For Offline" marks progression to the Offline assessment. For Offline rows, "Bucket" (A/B/C) is what gets shared with the Interview Coordinator App.<br />
               3. Upload the CSV here — existing rows (matched by Student ID + Exam) are updated, new ones are created.
             </div>
 
@@ -3267,79 +3275,205 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   );
 }
 
-// ─── Page: Assessment Generation ──────────────────────────────────────────────
+// ─── Page: Interviews ──────────────────────────────────────────────────────────
+// Header/tab structure only — no table or data wiring yet, pending decisions
+// on what interview data gets shown and where it's sourced from.
 
-function AssessmentGenPage({ exams, configs, assessments, onAddAssessment, uploads }) {
-  const [selectedExamId, setSelectedExamId] = useState("");
-  const [kind, setKind] = useState("Mock");
-  const [selectedConfigId, setSelectedConfigId] = useState("");
-  const [advSettings, setAdvSettings] = useState({ shuffle: true, tabSwitch: true, cameraReq: false, negativeMarking: false, timeLimit: "120" });
-  const [publishing, setPublishing] = useState(false);
-  const [published, setPublished] = useState(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+const INTERVIEW_BUCKETS = [
+  { id: "A", label: "Bucket A", subheaders: ["NxtMock", "TR1", "TR2"] },
+  { id: "B", label: "Bucket B", subheaders: ["TR1", "TR2"] },
+  { id: "C", label: "Bucket C", subheaders: [] },
+];
 
-  const exam = exams.find(e => e.id === selectedExamId);
-  const relevantConfigs = configs.filter(c => exam && c.examType === exam.type && c.active);
-  const config = configs.find(c => c.id === Number(selectedConfigId));
+function InterviewsPage() {
+  const [bucketTab, setBucketTab] = useState("A");
+  const [subTab, setSubTab] = useState("NxtMock");
+  const activeBucket = INTERVIEW_BUCKETS.find(b => b.id === bucketTab);
 
-  const { mockTag, mainTag } = exam ? genTags(exam, exams) : { mockTag: "—", mainTag: "—" };
-  const tag = exam ? (kind === "Mock" ? (exam.mockTagOverride || mockTag) : (exam.mainTagOverride || mainTag)) : "—";
-  const slot = exam ? (kind === "Mock" ? exam.mockSlot : exam.mainSlot) : "—";
-  const activeDate = exam ? (kind === "Mock" ? exam.mockStartDate : exam.mainStartDate) : null;
-
-  // Find last published assessment of same exam type for cloning
-  const lastAsst = assessments.filter(a => {
-    const ex = exams.find(e => e.id === a.examId);
-    return ex && exam && ex.type === exam.type;
-  }).sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-
-  const examStudents = uploads.filter(u => u.examId === selectedExamId).flatMap(u => u.rows.filter(r => r._status !== "duplicate"));
-
-  const publish = async () => {
-    setPublishing(true);
-    const newAsst = {
-      examId: exam.id,
-      label: tag,
-      type: kind,
-      link: `https://platform.example.com/asst/${tag.toLowerCase().replace(/[^a-z0-9]/g, "-")}`,
-      configLink: config?.configLink || lastAsst?.configLink || "",
-      date: exam.mainStartDate,
-      students: examStudents.length,
-      settings: { ...advSettings },
-    };
-    await onAddAssessment(newAsst);
-    setPublished(newAsst);
-    setPublishing(false);
+  const selectBucket = (id) => {
+    setBucketTab(id);
+    setSubTab(INTERVIEW_BUCKETS.find(b => b.id === id).subheaders[0] || "");
   };
-
-  const reset = () => { setPublished(null); setSelectedExamId(""); setSelectedConfigId(""); setKind("Mock"); };
-
-  const allExamAssts = assessments.filter(a => a.examId === selectedExamId);
 
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Assessment Generation</h1>
-        <p style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Select exam → pick config → review settings → publish. All links auto-generated.</p>
+        <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Interviews</h1>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 460px", gap: 28, alignItems: "flex-start" }}>
+      <div style={{ display: "flex", gap: 2, marginBottom: activeBucket.subheaders.length ? 12 : 24, borderBottom: `2px solid ${C.border}` }}>
+        {INTERVIEW_BUCKETS.map(b => (
+          <button key={b.id} onClick={() => selectBucket(b.id)} style={{ background: "none", border: "none", borderBottom: `2px solid ${bucketTab === b.id ? C.accent : "transparent"}`, marginBottom: -2, padding: "8px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", color: bucketTab === b.id ? C.accent : C.muted, fontFamily: "inherit", transition: "all 0.15s" }}>{b.label}</button>
+        ))}
+      </div>
 
-        {/* LEFT: Builder */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {activeBucket.subheaders.length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+          {activeBucket.subheaders.map(s => (
+            <button key={s} onClick={() => setSubTab(s)} style={{ background: subTab === s ? C.accentLight : C.surface, border: `1px solid ${subTab === s ? C.accent : C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", color: subTab === s ? C.accent : C.muted, fontFamily: "inherit" }}>{s}</button>
+          ))}
+        </div>
+      )}
+
+      <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
+    </div>
+  );
+}
+
+// ─── Page: Assessment Generation ──────────────────────────────────────────────
+
+function StepBadge({ n }) {
+  return <div style={{ width: 24, height: 24, background: C.accent, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 800, flexShrink: 0 }}>{n}</div>;
+}
+
+function LinkRow({ label, url, isLast, copiedUrl, onCopy }) {
+  const copied = copiedUrl === url;
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: isLast ? "none" : `1px solid ${C.border}` }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase" }}>{label}</div>
+        <div style={{ fontSize: 12, color: C.text, fontWeight: 600, wordBreak: "break-all", marginTop: 2 }}>{url}</div>
+      </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+        <button onClick={() => onCopy(url)} title="Copy" style={{ background: "none", border: "none", cursor: "pointer", color: copied ? C.green : C.muted, padding: 4, display: "inline-flex" }}>
+          {copied
+            ? <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8l3 3 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            : <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="5" y="5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><path d="M3 11V3h8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>}
+        </button>
+        <LinkChip url={url} label="Open" />
+      </div>
+    </div>
+  );
+}
+
+function normConfigPairs(data) {
+  if (Array.isArray(data)) return data.length ? data : [{ assessmentLink: "", configLink: "" }];
+  if (data?.assessmentLink !== undefined) return [{ assessmentLink: data.assessmentLink || "", configLink: data.configLink || "" }];
+  return [{ assessmentLink: "", configLink: "" }];
+}
+
+const genSlug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+
+function AssessmentGenPage({ exams, configEntries, uploads }) {
+  const [selectedExamId, setSelectedExamId] = useState("");
+  const [kind, setKind] = useState("Mock");
+  const [cloneKey, setCloneKey] = useState("");
+  const [cloneStatus, setCloneStatus] = useState("idle"); // idle | cloning | cloned
+  const [clonedConfigLink, setClonedConfigLink] = useState("");
+  const [publishStatus, setPublishStatus] = useState("idle"); // idle | publishing | published
+  const [published, setPublished] = useState(null);
+  const [inviteStatus, setInviteStatus] = useState("idle"); // idle | inviting | invited
+  const [copiedUrl, setCopiedUrl] = useState(null);
+
+  const cloneTimer = useRef(null);
+  const publishTimer = useRef(null);
+  const inviteTimer = useRef(null);
+  useEffect(() => () => { clearTimeout(cloneTimer.current); clearTimeout(publishTimer.current); clearTimeout(inviteTimer.current); }, []);
+
+  const exam = exams.find(e => e.id === selectedExamId);
+  const kindKey = kind === "Mock" ? "mock" : "main";
+
+  const { mockTag, mainTag } = exam ? genTags(exam, exams) : { mockTag: "—", mainTag: "—" };
+  const tag = exam ? (kind === "Mock" ? (exam.mockTagOverride || mockTag) : (exam.mainTagOverride || mainTag)) : "—";
+  const slot = exam ? (kind === "Mock" ? exam.mockSlot : exam.mainSlot) : "—";
+  const slotDisplay = exam
+    ? fmtDateTimeRange(kind === "Mock" ? exam.mockStartDate : exam.mainStartDate, kind === "Mock" ? exam.mockEndDate : exam.mainEndDate, slot)
+    : "—";
+
+  const examStudents = (uploads || []).filter(u => u.examId === selectedExamId).flatMap(u => u.rows.filter(r => r._status !== "duplicate"));
+
+  // Step 2: every exam of the same type with a config link on file for this Mock/Main kind — either
+  // from a previous published assessment, or one the Content Team has already dropped in the Config Library.
+  const cloneCandidates = exam ? exams
+    .filter(e => e.type === exam.type)
+    .flatMap(e => {
+      const entry = (configEntries || []).find(ce => ce.examId === e.id);
+      if (!entry) return [];
+      return normConfigPairs(entry[kindKey])
+        .map((p, idx) => ({ p, idx }))
+        .filter(({ p }) => p.configLink)
+        .map(({ p, idx }) => ({
+          key: `${e.id}::${idx}`,
+          examId: e.id,
+          pairIndex: idx,
+          title: kind === "Mock" ? (e.mockTitle || e.type) : (e.mainTitle || e.type),
+          date: kind === "Mock" ? e.mockStartDate : e.mainStartDate,
+          configLink: p.configLink,
+          assessmentLink: p.assessmentLink,
+        }));
+    })
+    .sort((a, b) => (b.date || "").localeCompare(a.date || "")) : [];
+
+  const cloneSource = cloneCandidates.find(c => c.key === cloneKey) || null;
+
+  // Read-only preview of what Publish would do to the Config Library, once the real save is wired up.
+  const configEntry = (configEntries || []).find(ce => ce.examId === selectedExamId);
+  const willReplace = !!(cloneSource && cloneSource.examId === selectedExamId && !cloneSource.assessmentLink && configEntry);
+
+  const resetDownstream = () => {
+    clearTimeout(cloneTimer.current); clearTimeout(publishTimer.current); clearTimeout(inviteTimer.current);
+    setCloneKey(""); setCloneStatus("idle"); setClonedConfigLink("");
+    setPublishStatus("idle"); setPublished(null); setInviteStatus("idle");
+  };
+
+  const onSelectExam = (v) => { setSelectedExamId(v); resetDownstream(); };
+  const onSelectKind = (k) => { setKind(k); resetDownstream(); };
+  const changeSource = () => { clearTimeout(cloneTimer.current); setCloneStatus("idle"); setClonedConfigLink(""); setPublishStatus("idle"); setPublished(null); setInviteStatus("idle"); };
+  const copyUrl = (url) => { if (!url) return; navigator.clipboard?.writeText(url); setCopiedUrl(url); setTimeout(() => setCopiedUrl(null), 1500); };
+
+  const doClone = () => {
+    if (!cloneSource) return;
+    setCloneStatus("cloning");
+    cloneTimer.current = setTimeout(() => {
+      setClonedConfigLink(`https://platform.example.com/config/${genSlug(tag)}-clone`);
+      setCloneStatus("cloned");
+    }, 900);
+  };
+
+  const doPublish = () => {
+    if (cloneStatus !== "cloned") return;
+    setPublishStatus("publishing");
+    publishTimer.current = setTimeout(() => {
+      setPublished({
+        assessmentLink: `https://platform.example.com/asst/${genSlug(tag)}`,
+        configLink: clonedConfigLink,
+        label: tag,
+        replaced: willReplace,
+      });
+      setPublishStatus("published");
+    }, 900);
+  };
+
+  const doInvite = () => {
+    setInviteStatus("inviting");
+    inviteTimer.current = setTimeout(() => setInviteStatus("invited"), 900);
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 6 }}>
+        <h1 style={{ fontSize: 18, fontWeight: 900, color: C.text, margin: 0 }}>Assessment Generation</h1>
+        <p style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Select exam → clone a config → auto-filled details → publish → invite students.</p>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
 
           {/* Step 1: Select Exam */}
-          <Card>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
-              <div style={{ width: 24, height: 24, background: C.accent, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 800, flexShrink: 0 }}>1</div>
-              <span style={{ fontWeight: 800, fontSize: 14 }}>Select Exam & Type</span>
+          <Card style={{ padding: 10 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+              <StepBadge n={1} />
+              <span style={{ fontWeight: 800, fontSize: 13 }}>Select Exam & Type</span>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, alignItems: "flex-end" }}>
-              <Field value={selectedExamId} onChange={v => { setSelectedExamId(v); setPublished(null); setSelectedConfigId(""); }}
-                options={exams.filter(e => getExamStatus(e) === "upcoming").map(e => ({ v: e.id, l: `${e.type} — ${fmtDateRange(e.mainStartDate, e.mainEndDate)}` }))} />
+              <Field value={selectedExamId} onChange={onSelectExam}
+                options={exams.filter(e => getExamStatus(e) === "upcoming").map(e => {
+                  const w = getWeek(e.mainStartDate, exams);
+                  const b = getBatch(e, exams);
+                  return { v: e.id, l: `${e.type}${w ? ` — W${w}` : ""}${b ? ` · B${b}` : ""}` };
+                })} />
               <div style={{ display: "flex", gap: 4, background: C.surfaceAlt, borderRadius: 8, padding: 4, border: `1px solid ${C.border}` }}>
                 {["Mock", "Main"].map(k => (
-                  <button key={k} onClick={() => setKind(k)} style={{
+                  <button key={k} onClick={() => onSelectKind(k)} style={{
                     background: kind === k ? C.surface : "transparent", border: "none",
                     borderRadius: 6, padding: "7px 18px", fontWeight: kind === k ? 700 : 400, cursor: "pointer",
                     color: kind === k ? C.text : C.muted, fontFamily: "inherit", fontSize: 13,
@@ -3349,174 +3483,116 @@ function AssessmentGenPage({ exams, configs, assessments, onAddAssessment, uploa
               </div>
             </div>
             {exam && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 14 }}>
-                <div style={{ background: C.accentLight, borderRadius: 8, padding: "10px 12px" }}>
-                  <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8 }}>TAG</div>
-                  <div style={{ fontWeight: 700, color: C.accentDark, marginTop: 2, fontSize: 10, fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.5 }}>{tag}</div>
-                </div>
-                <div style={{ background: C.surfaceAlt, borderRadius: 8, padding: "10px 12px" }}>
-                  <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8 }}>TIME SLOT</div>
-                  <div style={{ fontWeight: 700, color: C.text, marginTop: 2, fontSize: 12 }}>{slot}</div>
-                </div>
-                <div style={{ background: C.surfaceAlt, borderRadius: 8, padding: "10px 12px" }}>
-                  <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8 }}>STUDENTS (CLEAN)</div>
-                  <div style={{ fontWeight: 800, color: C.blue, marginTop: 2 }}>{examStudents.length}</div>
-                </div>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 16px", marginTop: 6, paddingTop: 6, borderTop: `1px solid ${C.border}`, fontSize: 12 }}>
+                <span style={{ color: C.muted }}>Slot: <strong style={{ color: C.text }}>{slotDisplay}</strong></span>
+                <span style={{ color: C.muted }}>Students: <strong style={{ color: C.blue }}>{examStudents.length}</strong></span>
+                <span style={{ color: C.muted, fontFamily: "monospace", fontSize: 10 }} title={tag}>{tag}</span>
               </div>
             )}
           </Card>
 
-          {/* Step 2: Config */}
+          {/* Step 2: Clone a Config Link (clone + auto-fill combined) */}
           {exam && (
-            <Card>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
-                <div style={{ width: 24, height: 24, background: C.accent, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 800, flexShrink: 0 }}>2</div>
-                <span style={{ fontWeight: 800, fontSize: 14 }}>Select Configuration</span>
+            <Card style={{ padding: 10 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                <StepBadge n={2} />
+                <span style={{ fontWeight: 800, fontSize: 13 }}>Clone a Config Link</span>
               </div>
 
-              {lastAsst && (
-                <div style={{ background: C.greenLight, border: `1px solid #b8e0cc`, borderRadius: 8, padding: "10px 14px", marginBottom: 12, display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-                  <div>
-                    <div style={{ fontSize: 11, color: C.muted, fontWeight: 700 }}>LAST USED (for cloning)</div>
-                    <div style={{ fontWeight: 700, color: C.green, fontSize: 13 }}>{lastAsst.label} — {fmtDate(lastAsst.date)}</div>
+              {cloneStatus === "cloned" ? (
+                <>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", background: C.greenLight, border: "1px solid #b8e0cc", borderRadius: 8, padding: "6px 12px", marginBottom: 6 }}>
+                    <div style={{ fontSize: 13 }}>
+                      <span style={{ color: C.green, fontWeight: 700 }}>✓ Cloned from </span>
+                      <span style={{ fontWeight: 700, color: C.text }}>{cloneSource?.title} — {fmtDate(cloneSource?.date)}</span>
+                    </div>
+                    <Btn variant="ghost" size="sm" onClick={changeSource}>Change</Btn>
                   </div>
-                  <LinkChip url={lastAsst.link} label="Clone Source" />
-                </div>
-              )}
-
-              {relevantConfigs.length === 0 ? (
-                <div style={{ color: C.muted, fontSize: 13, padding: "12px 0" }}>No active configs for this exam type. Add one in Config Library.</div>
+                  {publishStatus !== "published" && (
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", background: C.surfaceAlt, borderRadius: 8, padding: "6px 12px", marginBottom: 6 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8 }}>CLONED CONFIG LINK</div>
+                        <div style={{ fontWeight: 700, color: C.text, marginTop: 2, fontSize: 12, wordBreak: "break-all" }}>{clonedConfigLink}</div>
+                      </div>
+                      <LinkChip url={clonedConfigLink} label="Open" />
+                    </div>
+                  )}
+                  <Badge color="green">✓ Title, Tag & Time Slot Auto-filled</Badge>
+                </>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {relevantConfigs.map(cfg => (
-                    <label key={cfg.id} onClick={() => setSelectedConfigId(cfg.id)} style={{
-                      display: "flex", gap: 12, alignItems: "center", padding: "12px 14px", borderRadius: 8, cursor: "pointer",
-                      border: `1px solid ${selectedConfigId === cfg.id ? C.accent : C.border}`,
-                      background: selectedConfigId === cfg.id ? C.accentLight : C.surfaceAlt
-                    }}>
-                      <input type="radio" checked={selectedConfigId === cfg.id} onChange={() => setSelectedConfigId(cfg.id)} style={{ accentColor: C.accent }} />
+                <>
+                  {cloneCandidates.length === 0 ? (
+                    <div style={{ color: C.muted, fontSize: 12, padding: "4px 0" }}>No {kind} config links found for this exam type in the Config Library yet.</div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 700, color: C.text, fontSize: 13 }}>{cfg.label}</div>
-                        <div style={{ fontSize: 11, color: C.muted }}>{fmtDate(cfg.date)} · {cfg.sections.join(", ")}</div>
+                        <Field value={cloneKey} onChange={setCloneKey}
+                          options={cloneCandidates.map(c => ({
+                            v: c.key,
+                            l: `${c.title} — ${fmtDate(c.date)}${c.examId === selectedExamId ? " · this exam" : ""} · ${c.assessmentLink ? "Published" : "Awaiting publish"}`
+                          }))} />
                       </div>
-                      <LinkChip url={cfg.configLink} />
-                    </label>
-                  ))}
-                </div>
-              )}
-            </Card>
-          )}
-
-          {/* Step 3: Advanced Settings */}
-          {exam && (
-            <Card>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, cursor: "pointer" }} onClick={() => setShowAdvanced(!showAdvanced)}>
-                <div style={{ width: 24, height: 24, background: C.accent, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 12, fontWeight: 800, flexShrink: 0 }}>3</div>
-                <span style={{ fontWeight: 800, fontSize: 14 }}>Advanced Settings</span>
-                <span style={{ marginLeft: "auto", color: C.muted, fontSize: 12 }}>{showAdvanced ? "▲ Hide" : "▼ Show"}</span>
-              </div>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: showAdvanced ? 14 : 0, marginLeft: 32 }}>Standard POA settings pre-loaded. Change only if needed.</div>
-              {showAdvanced && (
-                <div style={{ marginLeft: 32, display: "flex", flexDirection: "column", gap: 10 }}>
-                  {[
-                    { key: "shuffle", label: "Shuffle Questions" },
-                    { key: "tabSwitch", label: "Block Tab Switching" },
-                    { key: "cameraReq", label: "Camera Required" },
-                    { key: "negativeMarking", label: "Negative Marking" },
-                  ].map(s => (
-                    <label key={s.key} style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
-                      <input type="checkbox" checked={advSettings[s.key]} onChange={e => setAdvSettings({ ...advSettings, [s.key]: e.target.checked })} style={{ accentColor: C.accent, width: 15, height: 15 }} />
-                      <span style={{ fontSize: 13, color: C.text }}>{s.label}</span>
-                    </label>
-                  ))}
-                  <Field label="Time Limit (mins)" value={advSettings.timeLimit} onChange={v => setAdvSettings({ ...advSettings, timeLimit: v })} type="number" />
-                </div>
-              )}
-            </Card>
-          )}
-        </div>
-
-        {/* RIGHT: Summary + Publish + History */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-          {/* Publish Panel */}
-          <Card style={{ background: published ? C.greenLight : C.surfaceAlt, border: `1px solid ${published ? "#b8e0cc" : C.border}` }}>
-            {!published ? (
-              <>
-                <div style={{ fontWeight: 800, fontSize: 15, color: C.text, marginBottom: 12 }}>Publish Summary</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-                  {[
-                    { l: "Exam", v: exam?.type || "—" },
-                    { l: "Date", v: exam ? fmtDateRange(kind === "Mock" ? exam.mockStartDate : exam.mainStartDate, kind === "Mock" ? exam.mockEndDate : exam.mainEndDate) : "—" },
-                    { l: "Type", v: kind },
-                    { l: "Tag", v: tag },
-                    { l: "Time Slot", v: slot },
-                    { l: "Config", v: config?.label || (lastAsst ? "Clone from last" : "—") },
-                    { l: "Students", v: examStudents.length > 0 ? examStudents.length : "—" },
-                  ].map(r => (
-                    <div key={r.l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                      <span style={{ color: C.muted, fontWeight: 600 }}>{r.l}</span>
-                      <span style={{ color: C.text, fontWeight: 700, textAlign: "right", maxWidth: 160 }}>{r.v}</span>
+                      {cloneSource && (
+                        <a href={cloneSource.configLink} target="_blank" rel="noreferrer" title="View config link"
+                          style={{ display: "inline-flex", alignItems: "center", color: C.blue, flexShrink: 0 }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M15 3h6v6M10 14L21 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </a>
+                      )}
                     </div>
-                  ))}
-                </div>
-                <Btn variant="green" size="lg" onClick={publish}
-                  disabled={!exam || publishing || (!selectedConfigId && !lastAsst)}>
-                  {publishing ? "⏳ Publishing…" : "🚀 Publish Assessment"}
+                  )}
+                  <div style={{ marginTop: 6 }}>
+                    <Btn variant="primary" onClick={doClone} disabled={!cloneSource || cloneStatus === "cloning"}>
+                      {cloneStatus === "cloning" ? "⏳ Cloning…" : "🧬 Clone Assessment"}
+                    </Btn>
+                  </div>
+                </>
+              )}
+            </Card>
+          )}
+
+          {/* Publish — a quick action, not a numbered step */}
+          {exam && cloneStatus === "cloned" && (
+            publishStatus !== "published" ? (
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                <Btn variant="green" onClick={doPublish} disabled={publishStatus === "publishing"}>
+                  {publishStatus === "publishing" ? "⏳ Publishing…" : "🚀 Publish Assessment"}
                 </Btn>
-                {!selectedConfigId && !lastAsst && exam && (
-                  <div style={{ color: C.red, fontSize: 11, marginTop: 8 }}>Select a config or ensure previous assessment exists for cloning.</div>
-                )}
-              </>
+              </div>
             ) : (
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 16, color: C.green, marginBottom: 4 }}>✅ Published!</div>
-                <div style={{ color: C.text, fontWeight: 700, marginBottom: 14 }}>{published.label}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-                  <div style={{ background: C.surface, borderRadius: 8, padding: 12 }}>
-                    <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8, marginBottom: 6 }}>ASSESSMENT LINK</div>
-                    <LinkChip url={published.link} label={published.label} />
-                  </div>
-                  <div style={{ background: C.surface, borderRadius: 8, padding: 12 }}>
-                    <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8, marginBottom: 6 }}>CONFIG LINK</div>
-                    <LinkChip url={published.configLink} label="Config Used" />
-                  </div>
+              <div style={{ background: C.greenLight, border: "1px solid #b8e0cc", borderRadius: 10, padding: 10 }}>
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontWeight: 900, fontSize: 13, color: C.green }}>✅ Published!</div>
+                  <div style={{ color: C.text, fontWeight: 700, fontSize: 12 }}>{exam?.type} · {kind}</div>
                 </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <Btn variant="secondary" size="sm" onClick={() => navigator.clipboard?.writeText(published.link)}>Copy Asst Link</Btn>
-                  <Btn variant="ghost" size="sm" onClick={reset}>New Assessment</Btn>
+                <div style={{ background: C.surface, borderRadius: 8, padding: "0 12px" }}>
+                  <LinkRow label="Assessment Link" url={published.assessmentLink} copiedUrl={copiedUrl} onCopy={copyUrl} />
+                  <LinkRow label="Config Link" url={published.configLink} isLast copiedUrl={copiedUrl} onCopy={copyUrl} />
                 </div>
               </div>
-            )}
-          </Card>
+            )
+          )}
 
-          {/* History for selected exam */}
-          <Card>
-            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 12, color: C.text }}>Published Assessments</div>
-            {assessments.length === 0 ? (
-              <div style={{ color: C.muted, fontSize: 12 }}>No assessments published yet.</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {[...assessments].reverse().slice(0, 6).map(a => {
-                  const ex = exams.find(e => e.id === a.examId);
-                  return (
-                    <div key={a.id} style={{ background: C.surfaceAlt, borderRadius: 8, padding: "10px 12px" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                        <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{a.label}</span>
-                        <Badge color={a.type === "Mock" ? "yellow" : "green"}>{a.type}</Badge>
-                      </div>
-                      <div style={{ color: C.muted, fontSize: 11, marginBottom: 6 }}>{ex?.type} · {fmtDate(a.date || ex?.mainStartDate)} · {a.students} students</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        <LinkChip url={a.link} />
-                        {a.configLink && <LinkChip url={a.configLink} />}
-                      </div>
-                    </div>
-                  );
-                })}
+          {/* Step 3: Invite Students */}
+          {publishStatus === "published" && (
+            <Card style={{ padding: 10 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                <StepBadge n={3} />
+                <span style={{ fontWeight: 800, fontSize: 13, color: C.text }}>Invite Students</span>
               </div>
-            )}
-          </Card>
-        </div>
+              {inviteStatus !== "invited" ? (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 12, color: C.muted }}>
+                    {examStudents.length > 0 ? `${examStudents.length} student${examStudents.length === 1 ? "" : "s"} matched for this exam.` : "No student data uploaded for this exam yet."}
+                  </div>
+                  <Btn variant="blue" onClick={doInvite} disabled={inviteStatus === "inviting" || examStudents.length === 0}>
+                    {inviteStatus === "inviting" ? "⏳ Inviting…" : "📨 Invite Students"}
+                  </Btn>
+                </div>
+              ) : (
+                <div style={{ fontWeight: 800, color: C.green, fontSize: 13 }}>✅ Invited — {examStudents.length} students</div>
+              )}
+            </Card>
+          )}
       </div>
     </div>
   );
@@ -3898,6 +3974,7 @@ const NAV = [
   { id: "configs",  label: "Config Library",        icon: "🗂️" },
   { id: "generate", label: "Assessment Generation", icon: "🚀" },
   { id: "results",  label: "Results",               icon: "🏆" },
+  { id: "interviews", label: "Interviews",          icon: "🎤" },
   { id: "team",     label: "Team & Roles",          icon: "🔑" },
 ];
 
@@ -3905,9 +3982,7 @@ export default function App() {
   const [page, setPage] = useState("exams");
   const [exams, setExams] = useState([]);
   const [uploads, setUploads] = useState([]);
-  const [configs, setConfigs] = useState([]);
   const [configEntries, setConfigEntries] = useState([]);
-  const [assessments, setAssessments] = useState([]);
   const [results, setResults] = useState([]);
   const [rolesList, setRolesList] = useState([]);
   const [livePerms, setLivePerms] = useState(PERMISSIONS);
@@ -3961,14 +4036,8 @@ export default function App() {
       onSnapshot(collection(db, "uploads"), snap =>
         setUploads(snap.docs.map(d => ({ id: d.id, ...d.data() })))
       ),
-      onSnapshot(collection(db, "configs"), snap =>
-        setConfigs(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-      ),
       onSnapshot(collection(db, "configEntries"), snap =>
         setConfigEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-      ),
-      onSnapshot(collection(db, "assessments"), snap =>
-        setAssessments(snap.docs.map(d => ({ id: d.id, ...d.data() })))
       ),
       onSnapshot(collection(db, "results"), snap =>
         setResults(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -4080,14 +4149,6 @@ export default function App() {
     }
   };
 
-  const onSaveConfig = async (form) => {
-    await addDoc(collection(db, "configs"), { ...form, active: true });
-  };
-
-  const onToggleConfigActive = async (id, currentActive) => {
-    await updateDoc(doc(db, "configs", id), { active: !currentActive });
-  };
-
   const onSaveConfigEntry = async (form) => {
     await addDoc(collection(db, "configEntries"), { ...form, createdAt: new Date().toISOString() });
   };
@@ -4098,10 +4159,6 @@ export default function App() {
 
   const onDeleteConfigEntry = async (id) => {
     await deleteDoc(doc(db, "configEntries", id));
-  };
-
-  const onAddAssessment = async (assessmentData) => {
-    await addDoc(collection(db, "assessments"), assessmentData);
   };
 
   const onSaveResult = async (data) => {
@@ -4262,8 +4319,9 @@ export default function App() {
         <div style={{ padding: "32px 32px" }}>
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
-          {page === "generate" && <AssessmentGenPage exams={exams} configs={configs} assessments={assessments} onAddAssessment={onAddAssessment} uploads={uploads} />}
+          {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} />}
           {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} role={role} />}
+          {page === "interviews" && <InterviewsPage />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
         </div>
       </div>
