@@ -3354,7 +3354,7 @@ function normConfigPairs(data) {
 
 const genSlug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 
-function AssessmentGenPage({ exams, configEntries, uploads }) {
+function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAssessment, onUpdateAssessment }) {
   const [selectedExamId, setSelectedExamId] = useState("");
   const [kind, setKind] = useState("Mock");
   const [cloneKey, setCloneKey] = useState("");
@@ -3364,6 +3364,7 @@ function AssessmentGenPage({ exams, configEntries, uploads }) {
   const [published, setPublished] = useState(null);
   const [inviteStatus, setInviteStatus] = useState("idle"); // idle | inviting | invited
   const [copiedUrl, setCopiedUrl] = useState(null);
+  const [currentAssessmentId, setCurrentAssessmentId] = useState(null);
 
   const cloneTimer = useRef(null);
   const publishTimer = useRef(null);
@@ -3410,15 +3411,23 @@ function AssessmentGenPage({ exams, configEntries, uploads }) {
   const configEntry = (configEntries || []).find(ce => ce.examId === selectedExamId);
   const willReplace = !!(cloneSource && cloneSource.examId === selectedExamId && !cloneSource.assessmentLink && configEntry);
 
+  // Label for "✓ Cloned from …" — from the live selection, or from the saved record when resuming a pending invite.
+  const clonedFromLabel = cloneSource
+    ? { title: cloneSource.title, date: cloneSource.date }
+    : (published?.sourceTitle ? { title: published.sourceTitle, date: published.sourceDate } : null);
+
+  // Published assessments that still need students invited — surfaced so a POC can come back and finish later.
+  const pendingInvites = (assessments || []).filter(a => !a.invited && a.id !== currentAssessmentId);
+
   const resetDownstream = () => {
     clearTimeout(cloneTimer.current); clearTimeout(publishTimer.current); clearTimeout(inviteTimer.current);
     setCloneKey(""); setCloneStatus("idle"); setClonedConfigLink("");
-    setPublishStatus("idle"); setPublished(null); setInviteStatus("idle");
+    setPublishStatus("idle"); setPublished(null); setInviteStatus("idle"); setCurrentAssessmentId(null);
   };
 
   const onSelectExam = (v) => { setSelectedExamId(v); resetDownstream(); };
   const onSelectKind = (k) => { setKind(k); resetDownstream(); };
-  const changeSource = () => { clearTimeout(cloneTimer.current); setCloneStatus("idle"); setClonedConfigLink(""); setPublishStatus("idle"); setPublished(null); setInviteStatus("idle"); };
+  const changeSource = () => { clearTimeout(cloneTimer.current); setCloneStatus("idle"); setClonedConfigLink(""); setPublishStatus("idle"); setPublished(null); setCurrentAssessmentId(null); setInviteStatus("idle"); };
   const copyUrl = (url) => { if (!url) return; navigator.clipboard?.writeText(url); setCopiedUrl(url); setTimeout(() => setCopiedUrl(null), 1500); };
 
   const doClone = () => {
@@ -3433,20 +3442,45 @@ function AssessmentGenPage({ exams, configEntries, uploads }) {
   const doPublish = () => {
     if (cloneStatus !== "cloned") return;
     setPublishStatus("publishing");
-    publishTimer.current = setTimeout(() => {
-      setPublished({
+    publishTimer.current = setTimeout(async () => {
+      const record = {
+        examId: selectedExamId,
+        examType: exam.type,
+        kind,
+        tag,
         assessmentLink: `https://platform.example.com/asst/${genSlug(tag)}`,
         configLink: clonedConfigLink,
-        label: tag,
+        sourceTitle: cloneSource?.title || "",
+        sourceDate: cloneSource?.date || "",
         replaced: willReplace,
-      });
+        invited: false,
+        publishedAt: new Date().toISOString(),
+      };
+      const id = await onAddAssessment(record);
+      setCurrentAssessmentId(id);
+      setPublished({ assessmentLink: record.assessmentLink, configLink: record.configLink, label: tag, replaced: willReplace, sourceTitle: record.sourceTitle, sourceDate: record.sourceDate });
       setPublishStatus("published");
     }, 900);
   };
 
   const doInvite = () => {
     setInviteStatus("inviting");
-    inviteTimer.current = setTimeout(() => setInviteStatus("invited"), 900);
+    inviteTimer.current = setTimeout(async () => {
+      if (currentAssessmentId) await onUpdateAssessment(currentAssessmentId, { invited: true, invitedAt: new Date().toISOString() });
+      setInviteStatus("invited");
+    }, 900);
+  };
+
+  const resumePending = (a) => {
+    resetDownstream();
+    setSelectedExamId(a.examId);
+    setKind(a.kind);
+    setCloneStatus("cloned");
+    setClonedConfigLink(a.configLink);
+    setPublishStatus("published");
+    setPublished({ assessmentLink: a.assessmentLink, configLink: a.configLink, label: a.tag, replaced: a.replaced, sourceTitle: a.sourceTitle, sourceDate: a.sourceDate });
+    setCurrentAssessmentId(a.id);
+    setInviteStatus("idle");
   };
 
   return (
@@ -3457,6 +3491,23 @@ function AssessmentGenPage({ exams, configEntries, uploads }) {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+
+          {/* Yet to Invite — published assessments still waiting on student invites */}
+          {pendingInvites.length > 0 && (
+            <Card style={{ padding: 10, background: C.yellowLight, border: "1px solid #e8d888" }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: C.text, marginBottom: 6 }}>
+                ⚠️ Yet to Invite ({pendingInvites.length})
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {pendingInvites.map(a => (
+                  <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: C.surface, borderRadius: 8, padding: "6px 10px" }}>
+                    <span style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>{a.examType} · {a.kind}</span>
+                    <Btn variant="blue" size="sm" onClick={() => resumePending(a)}>Invite Students</Btn>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {/* Step 1: Select Exam */}
           <Card style={{ padding: 10 }}>
@@ -3504,7 +3555,7 @@ function AssessmentGenPage({ exams, configEntries, uploads }) {
                   <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", background: C.greenLight, border: "1px solid #b8e0cc", borderRadius: 8, padding: "6px 12px", marginBottom: 6 }}>
                     <div style={{ fontSize: 13 }}>
                       <span style={{ color: C.green, fontWeight: 700 }}>✓ Cloned from </span>
-                      <span style={{ fontWeight: 700, color: C.text }}>{cloneSource?.title} — {fmtDate(cloneSource?.date)}</span>
+                      <span style={{ fontWeight: 700, color: C.text }}>{clonedFromLabel?.title} — {fmtDate(clonedFromLabel?.date)}</span>
                     </div>
                     <Btn variant="ghost" size="sm" onClick={changeSource}>Change</Btn>
                   </div>
@@ -3983,6 +4034,7 @@ export default function App() {
   const [exams, setExams] = useState([]);
   const [uploads, setUploads] = useState([]);
   const [configEntries, setConfigEntries] = useState([]);
+  const [publishedAssessments, setPublishedAssessments] = useState([]);
   const [results, setResults] = useState([]);
   const [rolesList, setRolesList] = useState([]);
   const [livePerms, setLivePerms] = useState(PERMISSIONS);
@@ -4038,6 +4090,9 @@ export default function App() {
       ),
       onSnapshot(collection(db, "configEntries"), snap =>
         setConfigEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      ),
+      onSnapshot(collection(db, "assessments"), snap =>
+        setPublishedAssessments(snap.docs.map(d => ({ id: d.id, ...d.data() })))
       ),
       onSnapshot(collection(db, "results"), snap =>
         setResults(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -4159,6 +4214,15 @@ export default function App() {
 
   const onDeleteConfigEntry = async (id) => {
     await deleteDoc(doc(db, "configEntries", id));
+  };
+
+  const onAddAssessment = async (data) => {
+    const ref = await addDoc(collection(db, "assessments"), data);
+    return ref.id;
+  };
+
+  const onUpdateAssessment = async (id, data) => {
+    await updateDoc(doc(db, "assessments", id), data);
   };
 
   const onSaveResult = async (data) => {
@@ -4319,7 +4383,7 @@ export default function App() {
         <div style={{ padding: "32px 32px" }}>
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
-          {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} />}
+          {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} />}
           {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} role={role} />}
           {page === "interviews" && <InterviewsPage />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
