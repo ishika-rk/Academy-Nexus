@@ -4045,9 +4045,14 @@ export default function App() {
   useEffect(() => {
     return onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) { setCurrentUser(null); return; }
-      const roleDoc = await getDoc(doc(db, "roles", firebaseUser.email));
-      const role = roleDoc.exists() ? roleDoc.data().role : null;
-      setCurrentUser({ email: firebaseUser.email, displayName: firebaseUser.displayName, photoURL: firebaseUser.photoURL, role });
+      try {
+        const roleDoc = await getDoc(doc(db, "roles", firebaseUser.email));
+        const role = roleDoc.exists() ? roleDoc.data().role : null;
+        setCurrentUser({ email: firebaseUser.email, displayName: firebaseUser.displayName, photoURL: firebaseUser.photoURL, role });
+      } catch (err) {
+        console.error("Failed to load role for", firebaseUser.email, err);
+        setCurrentUser({ email: firebaseUser.email, displayName: firebaseUser.displayName, photoURL: firebaseUser.photoURL, role: null });
+      }
     });
   }, []);
 
