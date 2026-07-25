@@ -179,6 +179,16 @@ function handleUploadFile(examId, file, uploads, onAddUpload) {
   });
 }
 
+const STUDENT_CSV_HEADERS = ["UID", "Name", "Phone Number", "Email ID"];
+
+function downloadStudentTemplate() {
+  const csv = [STUDENT_CSV_HEADERS].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = "student-data-template.csv";
+  a.click();
+}
+
 // Generate tags based on exam type, date, kind (Mock/Main), batch, cycle
 function genTags(exam, allExams) {
   const isPOA = ["Placement Online Assessment", "Preliminary Online Assessment", "DSA Assessment"].includes(exam.type);
@@ -1376,6 +1386,10 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                                       onChange={e => { const f = e.target.files[0]; e.target.value = ""; handleUploadFile(ex.id, f, uploads, onAddUpload).then(r => r && setUploadedResult(r)); }} />
                                     <Btn variant="secondary" size="sm" onClick={e => { e.stopPropagation(); fileRefs.current[ex.id]?.click(); }}>Upload CSV</Btn>
                                     <Btn variant="secondary" size="sm" onClick={e => e.stopPropagation()}>Source from Database</Btn>
+                                    <button onClick={e => { e.stopPropagation(); downloadStudentTemplate(); }} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                      Template
+                                    </button>
                                   </div>
                                 </div>
                               );
@@ -1919,6 +1933,10 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                   <div style={{ display: "flex", gap: 8 }}>
                     <Btn variant="secondary" size="sm" onClick={() => modalFileRef.current?.click()}>Upload CSV</Btn>
                     <Btn variant="secondary" size="sm">Source from Database</Btn>
+                    <button onClick={downloadStudentTemplate} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      Template
+                    </button>
                   </div>
                 </>
               ) : (
@@ -1935,6 +1953,10 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <Btn variant="secondary" size="sm" onClick={() => modalFileRef.current?.click()}>Upload CSV</Btn>
                     <Btn variant="secondary" size="sm">Source from Database</Btn>
+                    <button onClick={downloadStudentTemplate} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      Template
+                    </button>
                     {pendingStudentFile && <span style={{ fontSize: 11, color: C.muted }}>Will upload after exam is saved</span>}
                   </div>
                 </>
@@ -1954,8 +1976,6 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
 }
 
 // ─── Page: Student Data ───────────────────────────────────────────────────────
-
-const STUDENT_CSV_HEADERS = ["UID", "Name", "Phone Number", "Email ID"];
 
 function StudentDataPage({ exams, uploads, onAddUpload, onDeleteUpload }) {
   const [expanded, setExpanded] = useState({});
@@ -1982,14 +2002,6 @@ function StudentDataPage({ exams, uploads, onAddUpload, onDeleteUpload }) {
     handleUploadFile(examId, file, uploads, onAddUpload).then(() => {
       setExpanded(p => ({ ...p, [examId]: true }));
     });
-  };
-
-  const downloadTemplate = () => {
-    const csv = [STUDENT_CSV_HEADERS].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    a.download = "student-data-template.csv";
-    a.click();
   };
 
   const thS = { padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.surfaceAlt };
@@ -2021,7 +2033,7 @@ function StudentDataPage({ exams, uploads, onAddUpload, onDeleteUpload }) {
           <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Student Data</h1>
           <p style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Storehouse of all student data. Upload CSVs per exam — all columns are preserved, duplicates auto-flagged.</p>
         </div>
-        <button onClick={downloadTemplate} title="Download CSV template" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <button onClick={downloadStudentTemplate} title="Download CSV template" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
           Template
         </button>
