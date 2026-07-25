@@ -1955,6 +1955,8 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
 
 // ─── Page: Student Data ───────────────────────────────────────────────────────
 
+const STUDENT_CSV_HEADERS = ["UID", "Name", "Phone Number", "Email ID"];
+
 function StudentDataPage({ exams, uploads, onAddUpload, onDeleteUpload }) {
   const [expanded, setExpanded] = useState({});
   const [tabs, setTabs] = useState({});
@@ -1980,6 +1982,14 @@ function StudentDataPage({ exams, uploads, onAddUpload, onDeleteUpload }) {
     handleUploadFile(examId, file, uploads, onAddUpload).then(() => {
       setExpanded(p => ({ ...p, [examId]: true }));
     });
+  };
+
+  const downloadTemplate = () => {
+    const csv = [STUDENT_CSV_HEADERS].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = "student-data-template.csv";
+    a.click();
   };
 
   const thS = { padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.surfaceAlt };
@@ -2011,6 +2021,10 @@ function StudentDataPage({ exams, uploads, onAddUpload, onDeleteUpload }) {
           <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Student Data</h1>
           <p style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Storehouse of all student data. Upload CSVs per exam — all columns are preserved, duplicates auto-flagged.</p>
         </div>
+        <button onClick={downloadTemplate} title="Download CSV template" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          Template
+        </button>
       </div>
 
       {/* Program tabs */}
@@ -2987,15 +3001,23 @@ function ConfigLibraryPage({ configEntries, onSaveConfigEntry, onUpdateConfigEnt
 
 // ─── Page: Results ─────────────────────────────────────────────────────────────
 
-const RESULTS_CSV_HEADERS = ["Student ID", "Student Name", "Exam", "Program", "Score", "Status", "Eligible For Offline", "Bucket"];
+const ONLINE_CSV_HEADERS = ["Student UID", "Student Name", "Phone Number", "Email ID", "Exam", "User Attempt Start Date Time", "Problem Solving Coding Score", "Aptitude and Verbal Ability MCQs Score", "Technical MCQs Score", "Overall User Score", "User Report Link", "Clearance Status"];
+const OFFLINE_CSV_HEADERS = ["Student ID", "Student Name", "Phone Number", "Email ID", "Exam", "Score", "Status", "Bucket"];
 const RESULTS_HEADER_MAP = {
-  studentId: ["student id", "studentid", "id"],
-  name:      ["student name", "name"],
-  examName:  ["exam", "exam name"],
-  program:   ["program"],
+  studentId:       ["student uid", "student id", "studentid", "uid", "id"],
+  name:            ["student name", "name"],
+  phone:           ["phone number", "phone", "mobile", "mobile number"],
+  email:           ["email id", "email", "email address"],
+  examName:        ["exam", "exam name"],
+  attemptStartAt:  ["user attempt start date time", "attempt start date time", "attempt start"],
+  scoreCoding:      ["problem solving coding score", "problem solving coding", "coding score"],
+  scoreAptitude:    ["aptitude and verbal ability mcqs score", "aptitude and verbal ability mcqs", "aptitude score"],
+  scoreTechnical:   ["technical mcqs score", "technical mcqs", "technical score"],
+  overallScore:     ["overall user score", "overall score"],
+  reportLink:       ["user report link", "report link"],
+  clearanceStatus:  ["clearance status"],
   score:     ["score"],
   status:    ["status"],
-  eligible:  ["eligible for offline", "eligible for interview", "eligible"],
   bucket:    ["bucket"],
 };
 function getCol(row, field) {
@@ -3008,6 +3030,14 @@ function getCol(row, field) {
 function normalizeBucket(raw) {
   const m = raw.trim().toUpperCase().match(/[ABC]$/);
   return m ? m[0] : "";
+}
+function clearanceBadge(status) {
+  const s = (status || "").trim();
+  const l = s.toLowerCase();
+  if (!s) return <Badge color="gray">—</Badge>;
+  if (l.includes("clear") && !l.includes("not")) return <Badge color="green">{s}</Badge>;
+  if (l.includes("not") || l.includes("fail") || l.includes("reject")) return <Badge color="red">{s}</Badge>;
+  return <Badge color="gray">{s}</Badge>;
 }
 
 function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, role }) {
@@ -3030,7 +3060,8 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || ""));
 
   const downloadTemplate = () => {
-    const csv = [RESULTS_CSV_HEADERS].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const headers = programTab === "online" ? ONLINE_CSV_HEADERS : OFFLINE_CSV_HEADERS;
+    const csv = [headers].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
     a.download = `results-template-${programTab}.csv`;
@@ -3047,19 +3078,33 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         const studentId = getCol(row, "studentId");
         const examName = getCol(row, "examName");
         if (!studentId || !examName) { errors++; continue; }
-        const programRaw = getCol(row, "program").toLowerCase();
-        const program = programRaw.startsWith("off") ? "offline" : "online";
-        const eligibleRaw = getCol(row, "eligible").toLowerCase();
-        const data = {
-          studentId,
-          name: getCol(row, "name"),
-          examName,
-          program,
-          score: getCol(row, "score"),
-          status: getCol(row, "status"),
-          eligible: ["yes", "true", "1", "y"].includes(eligibleRaw),
-          bucket: program === "offline" ? normalizeBucket(getCol(row, "bucket")) : "",
-        };
+        const data = programTab === "online"
+          ? {
+              studentId,
+              name: getCol(row, "name"),
+              phone: getCol(row, "phone"),
+              email: getCol(row, "email"),
+              examName,
+              program: "online",
+              attemptStartAt: getCol(row, "attemptStartAt"),
+              scoreCoding: getCol(row, "scoreCoding"),
+              scoreAptitude: getCol(row, "scoreAptitude"),
+              scoreTechnical: getCol(row, "scoreTechnical"),
+              overallScore: getCol(row, "overallScore"),
+              reportLink: getCol(row, "reportLink"),
+              clearanceStatus: getCol(row, "clearanceStatus"),
+            }
+          : {
+              studentId,
+              name: getCol(row, "name"),
+              phone: getCol(row, "phone"),
+              email: getCol(row, "email"),
+              examName,
+              program: "offline",
+              score: getCol(row, "score"),
+              status: getCol(row, "status"),
+              bucket: normalizeBucket(getCol(row, "bucket")),
+            };
         try {
           const existing = (results || []).find(r => r.studentId === studentId && r.examName === examName);
           if (existing) { await onUpdateResult(existing.id, data); updated++; }
@@ -3086,7 +3131,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     try {
       const students = tabResults
         .filter(r => selectedIds.has(r.id))
-        .map(r => ({ resultId: r.id, studentId: r.studentId, name: r.name, examId: r.id, examName: r.examName, program: r.program, score: r.score, bucket: r.bucket || "" }));
+        .map(r => ({ resultId: r.id, studentId: r.studentId, name: r.name, phone: r.phone || "", email: r.email || "", examId: r.id, examName: r.examName, program: r.program, score: r.score, bucket: r.bucket || "" }));
       await onSendToInterview(students);
       setSelectedIds(new Set());
     } catch (err) {
@@ -3145,17 +3190,31 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         const totalPages = Math.ceil(tabResults.length / RESULTS_PAGE_SIZE);
         const pageRows = tabResults.slice((resultsPage - 1) * RESULTS_PAGE_SIZE, resultsPage * RESULTS_PAGE_SIZE);
         return (<>
-        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: C.surfaceAlt }}>
-                <th style={{ ...thBase, width: "1px" }} />
+                {programTab === "offline" && <th style={{ ...thBase, width: "1px" }} />}
                 <th style={thBase}>Student</th>
                 <th style={thBase}>Exam</th>
-                <th style={thBase}>Score</th>
-                <th style={thBase}>Status</th>
-                <th style={thBase}>{programTab === "offline" ? "Bucket" : "Eligible for Offline"}</th>
-                <th style={thBase}>Interview</th>
+                {programTab === "online" ? (
+                  <>
+                    <th style={thBase}>Attempt Start</th>
+                    <th style={thBase}>Problem Solving Coding</th>
+                    <th style={thBase}>Aptitude &amp; Verbal MCQs</th>
+                    <th style={thBase}>Technical MCQs</th>
+                    <th style={thBase}>Overall Score</th>
+                    <th style={thBase}>Report</th>
+                    <th style={thBase}>Clearance Status</th>
+                  </>
+                ) : (
+                  <>
+                    <th style={thBase}>Score</th>
+                    <th style={thBase}>Status</th>
+                    <th style={thBase}>Bucket</th>
+                    <th style={thBase}>Interview</th>
+                  </>
+                )}
                 {can(role, "results.write") && <th style={{ ...thBase, width: "1px" }} />}
               </tr>
             </thead>
@@ -3166,22 +3225,40 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 const canSelect = programTab === "offline" && !!r.bucket && r.interviewStatus !== "sent" && r.interviewStatus !== "completed";
                 return (
                   <tr key={r.id}>
-                    <td style={cell}>
-                      {canSelect && can(role, "results.write") && (
-                        <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} />
-                      )}
-                    </td>
+                    {programTab === "offline" && (
+                      <td style={cell}>
+                        {canSelect && can(role, "results.write") && (
+                          <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelect(r.id)} />
+                        )}
+                      </td>
+                    )}
                     <td style={cell}>
                       <div style={{ fontWeight: 700, color: C.text }}>{r.name || "—"}</div>
                       <div style={{ fontSize: 11, color: C.muted }}>{r.studentId}</div>
                     </td>
                     <td style={cell}>{r.examName}</td>
-                    <td style={cell}>{r.score || "—"}</td>
-                    <td style={cell}>{r.status || "—"}</td>
-                    <td style={cell}>{programTab === "offline"
-                      ? (r.bucket ? <Badge color="blue">Bucket {r.bucket}</Badge> : <Badge color="gray">—</Badge>)
-                      : (r.eligible ? <Badge color="green">Yes</Badge> : <Badge color="gray">No</Badge>)}</td>
-                    <td style={cell}>{interviewStatusBadge(r.interviewStatus)}</td>
+                    {programTab === "online" ? (
+                      <>
+                        <td style={cell}>{r.attemptStartAt || "—"}</td>
+                        <td style={cell}>{r.scoreCoding || "—"}</td>
+                        <td style={cell}>{r.scoreAptitude || "—"}</td>
+                        <td style={cell}>{r.scoreTechnical || "—"}</td>
+                        <td style={cell}>{r.overallScore || "—"}</td>
+                        <td style={cell}>
+                          {r.reportLink
+                            ? <a href={r.reportLink} target="_blank" rel="noopener noreferrer" style={{ color: C.blue, fontWeight: 600 }}>View</a>
+                            : "—"}
+                        </td>
+                        <td style={cell}>{clearanceBadge(r.clearanceStatus)}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td style={cell}>{r.score || "—"}</td>
+                        <td style={cell}>{r.status || "—"}</td>
+                        <td style={cell}>{r.bucket ? <Badge color="blue">Bucket {r.bucket}</Badge> : <Badge color="gray">—</Badge>}</td>
+                        <td style={cell}>{interviewStatusBadge(r.interviewStatus)}</td>
+                      </>
+                    )}
                     {can(role, "results.write") && (
                       <td style={cell}>
                         <button onClick={() => setConfirmDelete(r)} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex", color: C.muted }}>
@@ -3211,9 +3288,12 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
               <div style={{ fontWeight: 700, color: C.text, marginBottom: 4 }}>How it works</div>
-              1. Click <strong>Template</strong> to download the expected CSV column headers.<br />
-              2. Export the consolidated results from the Academy Data Studio dashboard and match these columns. For Online rows, "Eligible For Offline" marks progression to the Offline assessment. For Offline rows, "Bucket" (A/B/C) is what gets shared with the Interview Coordinator App.<br />
-              3. Upload the CSV here — existing rows (matched by Student ID + Exam) are updated, new ones are created.
+              1. Click <strong>Template</strong> to download the expected CSV column headers for the {programTab === "online" ? "Online" : "Offline"} tab.<br />
+              2. Export the results from the Academy Data Studio dashboard and match these columns. {programTab === "online"
+                ? <>Online rows carry section-wise scores (Problem Solving Coding, Aptitude &amp; Verbal MCQs, Technical MCQs), Overall Score, Report Link, and Clearance Status — which marks progression to the Offline assessment.</>
+                : <>Offline rows carry Score, Status, and Bucket (A/B/C) — Bucket is what gets shared with the Interview Coordinator App.</>}<br />
+              3. Upload the CSV here — existing rows (matched by Student ID/UID + Exam) are updated, new ones are created.<br />
+              Phone Number and Email ID are captured but never shown in this app — they're PII, stored only to pass along to the Interview Coordinator App when a student is sent to interview.
             </div>
 
             {importStatus === null && (
