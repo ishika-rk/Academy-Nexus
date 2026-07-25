@@ -151,12 +151,29 @@ function businessDaysUntil(dateStr) {
   return count;
 }
 
+// Required student CSV columns and how leniently we'll match a header to each.
+const STUDENT_COLUMN_CHECKS = [
+  ["UID", /^uid$/i],
+  ["Name", /^name$/i],
+  ["Phone Number", /phone/i],
+  ["Email ID", /email/i],
+];
+
+function missingStudentColumns(headers) {
+  return STUDENT_COLUMN_CHECKS.filter(([, re]) => !headers.some(h => re.test(h))).map(([label]) => label);
+}
+
 function handleUploadFile(examId, file, uploads, onAddUpload) {
   if (!file) return Promise.resolve();
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       const { headers, rows } = parseCSV(e.target.result);
+      const missing = missingStudentColumns(headers);
+      if (missing.length) {
+        resolve({ fileName: file.name, missing });
+        return;
+      }
       const existingRows = uploads.filter(u => u.examId === examId).flatMap(u => u.rows);
       const emailKey = headers.find(h => /email/i.test(h));
       const uidKey = headers.find(h => /^uid$/i.test(h));
@@ -1595,27 +1612,47 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
       {uploadedResult && (
         <Modal title="" onClose={() => setUploadedResult(null)} width={400}>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-              <div style={{ width: 48, height: 48, borderRadius: "50%", background: C.greenLight, border: `2px solid #a8d5b8`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke={C.green} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              </div>
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 17, color: C.text }}>Upload Successful</div>
-                <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{uploadedResult.fileName}</div>
-              </div>
-            </div>
-            <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px", display: "flex", gap: 28, fontSize: 13 }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Students added</span>
-                <span style={{ fontWeight: 800, fontSize: 20, color: C.green }}>{uploadedResult.cleanCount}</span>
-              </div>
-              {uploadedResult.dupCount > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Duplicates skipped</span>
-                  <span style={{ fontWeight: 800, fontSize: 20, color: C.red }}>{uploadedResult.dupCount}</span>
+            {uploadedResult.missing ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ width: 48, height: 48, borderRadius: "50%", background: C.redLight, border: `2px solid #f0c0c8`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 8v5M12 16.5v.5" stroke={C.red} strokeWidth="2.5" strokeLinecap="round"/><circle cx="12" cy="12" r="9" stroke={C.red} strokeWidth="2"/></svg>
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 900, fontSize: 17, color: C.text }}>Upload Rejected</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{uploadedResult.fileName}</div>
+                  </div>
                 </div>
-              )}
-            </div>
+                <div style={{ background: C.redLight, border: `1px solid #f0c0c8`, borderRadius: 8, padding: "12px 16px", fontSize: 13, color: C.text }}>
+                  Missing required column{uploadedResult.missing.length > 1 ? "s" : ""}: <b>{uploadedResult.missing.join(", ")}</b>.
+                  <div style={{ marginTop: 6, color: C.muted, fontSize: 12 }}>Download the Template and match its headers, then re-upload.</div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ width: 48, height: 48, borderRadius: "50%", background: C.greenLight, border: `2px solid #a8d5b8`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke={C.green} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 900, fontSize: 17, color: C.text }}>Upload Successful</div>
+                    <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{uploadedResult.fileName}</div>
+                  </div>
+                </div>
+                <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px", display: "flex", gap: 28, fontSize: 13 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Students added</span>
+                    <span style={{ fontWeight: 800, fontSize: 20, color: C.green }}>{uploadedResult.cleanCount}</span>
+                  </div>
+                  {uploadedResult.dupCount > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Duplicates skipped</span>
+                      <span style={{ fontWeight: 800, fontSize: 20, color: C.red }}>{uploadedResult.dupCount}</span>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <Btn onClick={() => setUploadedResult(null)}>Done</Btn>
             </div>
@@ -1949,7 +1986,19 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                     </div>
                   ) : null}
                   <input type="file" accept=".csv" ref={modalFileRef} style={{ display: "none" }}
-                    onChange={e => { setPendingStudentFile(e.target.files[0]); e.target.value = ""; }} />
+                    onChange={e => {
+                      const f = e.target.files[0];
+                      e.target.value = "";
+                      if (!f) return;
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        const { headers } = parseCSV(ev.target.result);
+                        const missing = missingStudentColumns(headers);
+                        if (missing.length) { setUploadedResult({ fileName: f.name, missing }); return; }
+                        setPendingStudentFile(f);
+                      };
+                      reader.readAsText(f);
+                    }} />
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <Btn variant="secondary" size="sm" onClick={() => modalFileRef.current?.click()}>Upload CSV</Btn>
                     <Btn variant="secondary" size="sm">Source from Database</Btn>
