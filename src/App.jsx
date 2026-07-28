@@ -5,7 +5,7 @@ import { onAuthStateChanged, signInWithPopup, signOut, createUserWithEmailAndPas
 
 // ─── Seed Data ────────────────────────────────────────────────────────────────
 
-const EXAM_TITLE_PRESETS = ["Placement Online Assessment", "Preliminary Online Assessment", "DSA Assessment", "Offline Placement Exam"];
+const EXAM_TITLE_PRESETS = ["Placement Online Assessment", "Preliminary Online Assessment", "Offline Placement Exam"];
 const TIME_SLOTS = ["9:00 AM – 11:00 AM", "11:00 AM – 1:00 PM", "2:00 PM – 4:00 PM", "4:00 PM – 6:00 PM"];
 const BUCKETS = ["New Students Only", "Old Students Only", "Old + New (Mixed)"];
 const SECTIONS = ["Aptitude", "Technical", "Domain"];
@@ -15,6 +15,25 @@ const OFFLINE_EXAM_TYPES = ["Offline Placement Exam"];
 const getExamProgramHead = (e) => {
   const prog = e.program || "core-assessments";
   if (prog === "online" || prog === "offline") return prog;
+  return OFFLINE_EXAM_TYPES.includes(e.type) ? "offline" : "online";
+};
+
+// Fixed presets map to the Online/Offline heads; any other exam category (custom, typed by
+// the user in the Add Exam modal) becomes its own head so the Exam Details page can give it
+// its own tab. Other pages still use getExamProgramHead above and bucket those under "Online".
+const FIXED_CATEGORY_PROGRAM = {
+  "Placement Online Assessment": "online",
+  "Preliminary Online Assessment": "online",
+  "Offline Placement Exam": "offline",
+};
+function deriveProgramForType(type) {
+  if (!type) return "online";
+  return FIXED_CATEGORY_PROGRAM[type] || type;
+}
+const getExamCategoryHead = (e) => {
+  const prog = e.program;
+  if (prog === "online" || prog === "offline") return prog;
+  if (prog) return prog;
   return OFFLINE_EXAM_TYPES.includes(e.type) ? "offline" : "online";
 };
 
@@ -864,7 +883,7 @@ function ExamTitleField({ value, onChange }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Exam Title</label>
+      <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Exam Category</label>
       {/* Preset chips */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {EXAM_TITLE_PRESETS.map(p => (
@@ -889,7 +908,7 @@ function ExamTitleField({ value, onChange }) {
         <input
           autoFocus
           type="text" value={isPreset ? "" : value} onChange={e => onChange(e.target.value)}
-          placeholder="Type exam title…"
+          placeholder="Type exam category…"
           style={{ background: C.surface, border: `1px solid ${C.accent}`, borderRadius: 7, padding: "9px 12px", fontSize: 13, color: C.text, fontFamily: "inherit", outline: "none" }}
         />
       )}
@@ -909,9 +928,13 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
   const [confirmNotify, setConfirmNotify] = useState(null);
   const [confirmCancel, setConfirmCancel] = useState(null);
   const [programTab, setProgramTab] = useState("online");
+  // Custom exam categories (anything the user typed into "Exam Category" that isn't one of the
+  // fixed presets) get their own tab, derived live from whatever's actually been saved.
+  const customCategoryIds = [...new Set(exams.map(e => getExamCategoryHead(e)).filter(id => id !== "online" && id !== "offline"))].sort();
   const PROGRAMS = [
     { id: "online",  label: "Online" },
     { id: "offline", label: "Offline" },
+    ...customCategoryIds.map(id => ({ id, label: id })),
   ];
   const emptyForm = { type: "", requireMock: true, mockTitle: "", mainTitle: "", mockStartDate: "", mockEndDate: "", mainStartDate: "", mainEndDate: "", mockSlot: "", mainSlot: "", cycle: "", program: "online" };
   const [form, setForm] = useState(emptyForm);
@@ -949,7 +972,12 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
 
   const [showImport, setShowImport] = useState(false);
 
-  const openNew = () => { setForm({ ...emptyForm, program: programTab }); setEditing(null); setOriginalForm(null); setPendingStudentFile(null); setShowModal(true); };
+  const openNew = () => {
+    // Opening "Add Exam" from a custom category's tab pre-fills that category so it doesn't have to be retyped.
+    const prefillType = (programTab !== "online" && programTab !== "offline") ? programTab : "";
+    setForm({ ...emptyForm, type: prefillType, program: deriveProgramForType(prefillType) });
+    setEditing(null); setOriginalForm(null); setPendingStudentFile(null); setShowModal(true);
+  };
   const openEdit = (ex) => { setForm({ ...emptyForm, ...ex }); setEditing(ex.id); setOriginalForm({ ...emptyForm, ...ex }); setPendingStudentFile(null); setShowModal(true); };
 
   const handleImportCSV = async (rows) => {
@@ -973,14 +1001,15 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
       form.mainEndDate !== originalForm.mainEndDate ||
       form.mainSlot !== originalForm.mainSlot
     );
-    const savedId = await onSaveExam(form, editing);
+    const formToSave = { ...form, program: deriveProgramForType(form.type) };
+    const savedId = await onSaveExam(formToSave, editing);
     if (pendingStudentFile) {
       const r = await handleUploadFile(savedId, pendingStudentFile, uploads, onAddUpload);
       setPendingStudentFile(null);
       if (r) setUploadedResult(r);
     }
     setShowModal(false);
-    setSavedExam({ ...form, id: savedId, _isEdit: isEdit, _notifyContent: !isEdit || contentRelevantChanged });
+    setSavedExam({ ...formToSave, id: savedId, _isEdit: isEdit, _notifyContent: !isEdit || contentRelevantChanged });
     setNotifySent(false);
     await onAddNotification({
       type: isEdit ? "exam_updated" : "exam_added",
@@ -999,9 +1028,9 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
   const navigateToExam = (examId) => {
     const exam = exams.find(e => e.id === examId);
     if (!exam) { setShowNotifs(false); return; }
-    const targetProgram = getExamProgramHead(exam);
+    const targetProgram = getExamCategoryHead(exam);
     const allInProgram = exams
-      .filter(e => getExamProgramHead(e) === targetProgram)
+      .filter(e => getExamCategoryHead(e) === targetProgram)
       .sort((a, b) => {
         const diff = (a.mainStartDate || "").localeCompare(b.mainStartDate || "");
         return sortOrder === "asc" ? diff : -diff;
@@ -1028,10 +1057,10 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
   }, [highlightedExamId]);
 
   // Unique exam categories derived from actual data, scoped to current tab
-  const examCategories = [...new Set(exams.filter(e => getExamProgramHead(e) === programTab).map(e => e.type).filter(Boolean))];
+  const examCategories = [...new Set(exams.filter(e => getExamCategoryHead(e) === programTab).map(e => e.type).filter(Boolean))];
 
   const filtered = exams.filter(e => {
-    if (getExamProgramHead(e) !== programTab) return false;
+    if (getExamCategoryHead(e) !== programTab) return false;
     if (filter !== "all" && getExamStatus(e) !== filter) return false;
     if (filterCategory && e.type !== filterCategory) return false;
     if (filterDateStart && !(e.mainStartDate && e.mainStartDate >= filterDateStart)) return false;
@@ -1856,8 +1885,8 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
         <Modal title={editing ? "Edit Exam" : "Add New Exam"} onClose={() => setShowModal(false)} width={660}>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-            {/* Exam Title */}
-            <ExamTitleField value={form.type} onChange={v => setForm({ ...form, type: v })} />
+            {/* Exam Category */}
+            <ExamTitleField value={form.type} onChange={v => setForm({ ...form, type: v, program: deriveProgramForType(v) })} />
 
             <Divider />
 
