@@ -3446,8 +3446,9 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
 }
 
 // ─── Page: Interviews ──────────────────────────────────────────────────────────
-// Header/tab structure only — no table or data wiring yet, pending decisions
-// on what interview data gets shown and where it's sourced from.
+// Bucket A / NxtMock has its table columns wired; everything else is still
+// header/tab structure only, pending decisions on data and sourcing.
+// NxtMock rows will be populated from the Dashboard via a service account later.
 
 const INTERVIEW_BUCKETS = [
   { id: "A", label: "Bucket A", subheaders: ["NxtMock", "TR1", "TR2"] },
@@ -3455,10 +3456,22 @@ const INTERVIEW_BUCKETS = [
   { id: "C", label: "Bucket C", subheaders: [] },
 ];
 
+const NXTMOCK_COLUMNS = [
+  { key: "userId", label: "User ID" },
+  { key: "interviewId", label: "Interview ID" },
+  { key: "attemptStartAt", label: "Interview Attempt Start Date Time" },
+  { key: "avgRating", label: "Average User Interview Rating" },
+  { key: "durationMinutes", label: "Interview Attempt Duration in Minutes" },
+  { key: "qualificationStatus", label: "Qualification Status" },
+];
+
 function InterviewsPage() {
   const [bucketTab, setBucketTab] = useState("A");
   const [subTab, setSubTab] = useState("NxtMock");
   const activeBucket = INTERVIEW_BUCKETS.find(b => b.id === bucketTab);
+  const isNxtMock = bucketTab === "A" && subTab === "NxtMock";
+
+  const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase", border: `1px solid ${C.border}`, whiteSpace: "nowrap", padding: "6px 12px", textAlign: "left", color: C.muted };
 
   const selectBucket = (id) => {
     setBucketTab(id);
@@ -3485,7 +3498,28 @@ function InterviewsPage() {
         </div>
       )}
 
-      <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
+      {isNxtMock ? (
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: C.surfaceAlt }}>
+                {NXTMOCK_COLUMNS.map(col => (
+                  <th key={col.key} style={thBase}>{col.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colSpan={NXTMOCK_COLUMNS.length} style={{ padding: "28px 12px", textAlign: "center", color: C.muted, fontSize: 12, border: `1px solid ${C.border}` }}>
+                  No data yet — this will populate from the Dashboard via a service account.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
+      )}
     </div>
   );
 }
