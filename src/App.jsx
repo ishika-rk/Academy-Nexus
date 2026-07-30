@@ -3446,9 +3446,10 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
 }
 
 // ─── Page: Interviews ──────────────────────────────────────────────────────────
-// Bucket A / NxtMock has its table columns wired; everything else is still
-// header/tab structure only, pending decisions on data and sourcing.
-// NxtMock rows will be populated from the Dashboard via a service account later.
+// Bucket A / NxtMock and Bucket A / TR1 have their table columns wired; everything
+// else is still header/tab structure only, pending decisions on data and sourcing.
+// NxtMock rows come from the Dashboard (via a service account); TR1 rows come
+// from the Interview App. Both are wired later.
 
 const INTERVIEW_BUCKETS = [
   { id: "A", label: "Bucket A", subheaders: ["NxtMock", "TR1", "TR2"] },
@@ -3465,13 +3466,102 @@ const NXTMOCK_COLUMNS = [
   { key: "qualificationStatus", label: "Qualification Status" },
 ];
 
+const TR1_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "candidateResume", label: "Candidate Resume" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "codingProblemAsked", label: "Coding Problem asked" },
+  { key: "p1ProblemSolvingRating", label: "Problem 1 - Problem Solving (Rating out of 5)" },
+  { key: "p1ProblemSolvingRemarks", label: "Problem 1 - Remarks on Problem Solving" },
+  { key: "p1CodeImplementationRating", label: "Problem 1 - Code Implementation (Rating out of 5)" },
+  { key: "p1CodeImplementationRemarks", label: "Problem 1 - Remarks on Code Implementation" },
+  { key: "p2ProblemSolvingRating", label: "Problem 2 - Problem Solving (Rating out of 5)" },
+  { key: "p2ProblemSolvingRemarks", label: "Problem 2 - Remarks on Problem Solving" },
+  { key: "p2CodeImplementationRating", label: "Problem 2 - Code Implementation (Rating out of 5)" },
+  { key: "p2CodeImplementationRemarks", label: "Problem 2 - Remarks on Code Implementation" },
+  { key: "dsaTheoryQ1", label: "DSA Theory/ rapid fire question 1" },
+  { key: "dsaTheoryQ1Remarks", label: "Remarks on DSA Theory/ rapid fire question 1" },
+  { key: "coreCsTheoryQ1", label: "Core CS Theory/ rapid fire question 1" },
+  { key: "coreCsTheoryQ1Remarks", label: "Remarks on Core CS Theory / rapid fire question 1" },
+  { key: "overallComments", label: "Overall Comments" },
+  { key: "totalScore", label: "Total Score (out of 100)" },
+  { key: "finalStatus", label: "Final Status" },
+];
+
+const INTERVIEW_TABLE_COLUMNS = {
+  "A:NxtMock": { columns: NXTMOCK_COLUMNS, source: "the Dashboard via a service account" },
+  "A:TR1": { columns: TR1_COLUMNS, source: "the Interview App" },
+};
+
+// Fixed-width columns (regardless of header length) with single-line truncated cells;
+// click a truncated cell to see its full value in a popup. Shared by every Interviews
+// table (and any added later) so a long header can't blow up the column width.
+const INTERVIEW_COL_WIDTH = 170;
+
+function InterviewDataTable({ columns, rows, source }) {
+  const [expanded, setExpanded] = useState(null); // { label, value } | null
+
+  const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", border: `1px solid ${C.border}`, padding: "8px 10px", textAlign: "left", color: C.muted, width: INTERVIEW_COL_WIDTH, minWidth: INTERVIEW_COL_WIDTH, maxWidth: INTERVIEW_COL_WIDTH, whiteSpace: "normal", lineHeight: 1.4 };
+  const tdBase = { border: `1px solid ${C.border}`, padding: "8px 10px", width: INTERVIEW_COL_WIDTH, minWidth: INTERVIEW_COL_WIDTH, maxWidth: INTERVIEW_COL_WIDTH, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.text };
+
+  return (
+    <>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
+          <thead>
+            <tr style={{ background: C.surfaceAlt }}>
+              {columns.map(col => (
+                <th key={col.key} style={thBase}>{col.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length} style={{ padding: "28px 12px", textAlign: "center", color: C.muted, fontSize: 12, border: `1px solid ${C.border}` }}>
+                  No data yet — this will populate from {source}.
+                </td>
+              </tr>
+            ) : rows.map((row, i) => (
+              <tr key={row.id ?? i} style={{ background: i % 2 === 0 ? "#fff" : C.surfaceAlt }}>
+                {columns.map(col => {
+                  const value = row[col.key];
+                  const hasValue = value !== undefined && value !== null && value !== "";
+                  return (
+                    <td
+                      key={col.key}
+                      style={{ ...tdBase, cursor: hasValue ? "pointer" : "default" }}
+                      title={hasValue ? "Click to view full entry" : undefined}
+                      onClick={hasValue ? () => setExpanded({ label: col.label, value }) : undefined}
+                    >
+                      {hasValue ? value : "—"}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {expanded && (
+        <Modal title={expanded.label} onClose={() => setExpanded(null)}>
+          <div style={{ fontSize: 13, color: C.text, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{expanded.value}</div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function InterviewsPage() {
   const [bucketTab, setBucketTab] = useState("A");
   const [subTab, setSubTab] = useState("NxtMock");
   const activeBucket = INTERVIEW_BUCKETS.find(b => b.id === bucketTab);
-  const isNxtMock = bucketTab === "A" && subTab === "NxtMock";
-
-  const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase", border: `1px solid ${C.border}`, whiteSpace: "nowrap", padding: "6px 12px", textAlign: "left", color: C.muted };
+  const activeTable = INTERVIEW_TABLE_COLUMNS[`${bucketTab}:${subTab}`];
 
   const selectBucket = (id) => {
     setBucketTab(id);
@@ -3498,25 +3588,8 @@ function InterviewsPage() {
         </div>
       )}
 
-      {isNxtMock ? (
-        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: C.surfaceAlt }}>
-                {NXTMOCK_COLUMNS.map(col => (
-                  <th key={col.key} style={thBase}>{col.label}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td colSpan={NXTMOCK_COLUMNS.length} style={{ padding: "28px 12px", textAlign: "center", color: C.muted, fontSize: 12, border: `1px solid ${C.border}` }}>
-                  No data yet — this will populate from the Dashboard via a service account.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+      {activeTable ? (
+        <InterviewDataTable columns={activeTable.columns} rows={activeTable.rows || []} source={activeTable.source} />
       ) : (
         <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
       )}
