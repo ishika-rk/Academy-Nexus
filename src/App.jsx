@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, Fragment } from "react";
 import { db, auth, googleProvider, storage } from "./firebase";
-import { collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc } from "firebase/firestore";
+import { collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, query, orderBy } from "firebase/firestore";
 import { onAuthStateChanged, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 
@@ -4276,22 +4276,109 @@ function InterviewDataTable({ columns, rows, source }) {
   );
 }
 
+// Bucket A / TR1 is the slot already labeled `source: "the Interview App"` —
+// so that's where live Interview Coordinator data (Academy-prefixed
+// templates) gets wired in below. Fed two ways, both writing into our own
+// `interviews` Firestore collection so this listener reflects either
+// instantly:
+//  - Push: the Interview Coordinator App calls api/interview-feedback.js the
+//    moment a status/feedback change happens.
+//  - Pull: the "Sync Now" button calls api/ic-interviews.js, which reads
+//    straight from the Interview Coordinator App's own Firestore (same
+//    cross-project-read pattern the IOE Admin Portal uses) and backfills
+//    anything not yet pushed.
+// Per-problem rubric fields (Problem 1/2 ratings, DSA/Core CS Theory,
+// recording link) aren't populated yet — that needs a confirmed mapping from
+// the Interview Coordinator App's feedback.domains shape to these specific
+// columns, still TBD.
+function academyInterviewToTR1Row(iv) {
+  return {
+    candidateId: iv.id,
+    candidateName: iv.candidateName || "",
+    candidateResume: "",
+    interviewDate: iv.scheduledDate || "",
+    interviewStartTime: iv.scheduledTime || "",
+    panelistName: iv.interviewerEmail || "",
+    recordingLink: "",
+    codingProblemAsked: "",
+    p1ProblemSolvingRating: "", p1ProblemSolvingRemarks: "",
+    p1CodeImplementationRating: "", p1CodeImplementationRemarks: "",
+    p2ProblemSolvingRating: "", p2ProblemSolvingRemarks: "",
+    p2CodeImplementationRating: "", p2CodeImplementationRemarks: "",
+    dsaTheoryQ1: "", dsaTheoryQ1Remarks: "",
+    coreCsTheoryQ1: "", coreCsTheoryQ1Remarks: "",
+    overallComments: iv.remarks || "",
+    totalScore: iv.finalVerdict ?? "",
+    finalStatus: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+  };
+}
+
 function InterviewsPage() {
   const [bucketTab, setBucketTab] = useState("A");
   const [subTab, setSubTab] = useState("NxtMock");
   const activeBucket = INTERVIEW_BUCKETS.find(b => b.id === bucketTab);
   const activeTable = INTERVIEW_TABLE_COLUMNS[`${bucketTab}:${subTab}`];
 
+  const [academyInterviews, setAcademyInterviews] = useState([]);
+  const [listenerError, setListenerError] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "interviews"), orderBy("updatedAt", "desc")),
+      (snap) => { setAcademyInterviews(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setListenerError(null); },
+      (err) => { console.error("interviews listener error:", err); setListenerError(err.message || "Failed to load interviews"); }
+    );
+    return unsub;
+  }, []);
+
+  const syncNow = async () => {
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch("/api/ic-interviews", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
+      setLastSyncedAt(data.syncedAt || new Date().toISOString());
+    } catch (err) {
+      setSyncError(err.message || "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const selectBucket = (id) => {
     setBucketTab(id);
     setSubTab(INTERVIEW_BUCKETS.find(b => b.id === id).subheaders[0] || "");
   };
 
+  const isAcademySlot = bucketTab === "A" && subTab === "TR1";
+  const activeRows = isAcademySlot ? academyInterviews.map(academyInterviewToTR1Row) : (activeTable?.rows || []);
+  const syncBannerError = listenerError || syncError;
+
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Interviews</h1>
+        {isAcademySlot && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>
+              Updates live as interviews are completed{lastSyncedAt ? ` · Last full sync ${new Date(lastSyncedAt).toLocaleString()}` : ""}
+            </span>
+            <Btn variant="secondary" onClick={syncNow} disabled={syncing}>{syncing ? "Syncing…" : "Sync Now"}</Btn>
+          </div>
+        )}
       </div>
+
+      {isAcademySlot && syncBannerError && (
+        <div style={{ marginBottom: 16, fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "10px 14px" }}>{syncBannerError}</div>
+      )}
 
       <div style={{ display: "flex", gap: 2, marginBottom: activeBucket.subheaders.length ? 12 : 24, borderBottom: `2px solid ${C.border}` }}>
         {INTERVIEW_BUCKETS.map(b => (
@@ -4308,7 +4395,7 @@ function InterviewsPage() {
       )}
 
       {activeTable ? (
-        <InterviewDataTable key={`${bucketTab}:${subTab}`} columns={activeTable.columns} rows={activeTable.rows || []} source={activeTable.source} />
+        <InterviewDataTable key={`${bucketTab}:${subTab}`} columns={activeTable.columns} rows={activeRows} source={activeTable.source} />
       ) : (
         <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
       )}

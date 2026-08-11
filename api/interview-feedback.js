@@ -1,19 +1,29 @@
 import { adminDb } from "./_lib/firebaseAdmin.js";
 import { requireApiKey } from "./_lib/auth.js";
 
-// Called BY the Interview Coordinator App to push interview feedback/results
-// back into Academy Nexus once an interview has been conducted.
+// Called BY the Interview Coordinator App the moment an Academy interview's
+// status/feedback changes (in particular, when it's marked "completed") —
+// gives near-instant reflection here instead of waiting on the next manual
+// sync. Writes into the same `interviews` collection /api/ic-interviews
+// backfills, keyed by the Interview Coordinator App's own interview id, so
+// the two sources merge cleanly and the Interviews page's live Firestore
+// listener picks this up immediately.
 //
 // Auth: header  x-api-key: <INTERVIEW_FEEDBACK_API_KEY>
 //
-// Expected JSON body:
+// Expected JSON body (same shape /api/ic-interviews maps interviews to):
 // {
-//   "resultId": "the results/{id} doc this interview was sent from",
-//   "studentId": "string",
-//   "outcome": "Selected" | "Rejected" | "On Hold",
-//   "feedback": "free text feedback from the interviewer",
-//   "interviewer": "optional string",
-//   "interviewedAt": "ISO 8601 date string"
+//   "interviewId": "Interview Coordinator App's interview doc id",
+//   "candidateName": "string", "candidateEmail": "string",
+//   "interviewerEmail": "string",
+//   "templateName": "string", "round": "string",
+//   "status": "pending_acceptance" | "scheduled" | "completed" | "no_show" | "cancelled",
+//   "outcome": "string (feedback.overallRecommendation)",
+//   "finalVerdict": number | null,
+//   "remarks": "string (feedback.comments)",
+//   "scheduledDate": "YYYY-MM-DD", "scheduledTime": "string",
+//   "completedAt": "ISO 8601 date string",
+//   "updatedAt": "ISO 8601 date string"
 // }
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -31,25 +41,36 @@ export default async function handler(req, res) {
     return res.status(err.statusCode || 401).json({ error: err.message });
   }
 
-  const { resultId, studentId, outcome, feedback, interviewer, interviewedAt } = req.body || {};
+  const {
+    interviewId, candidateName, candidateEmail, interviewerEmail,
+    templateName, round, status, outcome, finalVerdict, remarks,
+    scheduledDate, scheduledTime, completedAt, updatedAt,
+  } = req.body || {};
 
-  if (!resultId || !studentId || !outcome) {
-    return res.status(400).json({ error: "resultId, studentId and outcome are required" });
+  if (!interviewId || !status) {
+    return res.status(400).json({ error: "interviewId and status are required" });
   }
 
   try {
     await adminDb
       .collection("interviews")
-      .doc(resultId)
+      .doc(interviewId)
       .set(
         {
-          resultId,
-          studentId,
-          outcome,
-          feedback: feedback || "",
-          interviewer: interviewer || "",
-          interviewedAt: interviewedAt || null,
-          status: "completed",
+          id: interviewId,
+          candidateName: candidateName || "",
+          candidateEmail: candidateEmail || "",
+          interviewerEmail: interviewerEmail || "",
+          templateName: templateName || "",
+          round: round || "",
+          status,
+          outcome: outcome || "",
+          finalVerdict: finalVerdict ?? null,
+          remarks: remarks || "",
+          scheduledDate: scheduledDate || "",
+          scheduledTime: scheduledTime || "",
+          completedAt: completedAt || null,
+          updatedAt: updatedAt || new Date().toISOString(),
           receivedAt: new Date().toISOString(),
         },
         { merge: true }
