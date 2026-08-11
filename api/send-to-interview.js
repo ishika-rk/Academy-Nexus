@@ -8,7 +8,8 @@ import { requireUser } from "./_lib/auth.js";
 // Auth: header  Authorization: Bearer <Firebase ID token>
 //
 // Expected JSON body:
-// { "students": [{ "resultId": "...", "studentId": "...", "name": "...", "examId": "...", "examName": "...", "program": "Online" | "Offline", "bucket": "A" | "B" | "C", "score": 0 }] }
+// { "students": [{ "resultId": "...", "studentId": "...", "name": "...", "phone": "...", "email": "...", "examId": "...", "examName": "...", "program": "Online" | "Offline", "bucket": "A" | "B" | "C", "score": 0 }] }
+// phone/email are PII: never rendered in our own UI, only carried through to the Interview Coordinator App.
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -65,6 +66,8 @@ export default async function handler(req, res) {
           resultId: student.resultId,
           studentId: student.studentId,
           name: student.name || "",
+          phone: student.phone || "",
+          email: student.email || "",
           examId: student.examId || "",
           examName: student.examName || "",
           program: student.program || "",
