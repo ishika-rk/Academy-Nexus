@@ -1,0 +1,55 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/roles/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/roles/$(request.auth.token.email)).data.role == 'super_admin';
+    }
+
+    // Self-registration: anyone can create their own pending request (this
+    // happens before the user has signed in to Firebase Auth). Any signed-in
+    // user can read the collection — needed so a not-yet-approved user can
+    // see their own "awaiting approval" status, and for the Team & Roles
+    // admin view. Only a super_admin can approve/reject/remove a request.
+    match /accessRequests/{email} {
+      allow create: if request.resource.data.email == email
+                    && request.resource.data.status == 'pending';
+      allow read: if isSignedIn();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Role assignments — granting/revoking access is a super_admin-only action.
+    match /roles/{email} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // Dynamic permissions matrix. The app auto-creates this doc once if
+    // missing (any signed-in user may trigger that first-run fallback);
+    // once it exists, only a super_admin may edit it.
+    match /settings/permissions {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && !exists(/databases/$(database)/documents/settings/permissions);
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Internal app data — client-side role checks (can()) already gate the
+    // UI for these; these rules just keep the database closed to the
+    // public internet instead of wide open.
+    match /exams/{id}          { allow read, write: if isSignedIn(); }
+    match /uploads/{id}        { allow read, write: if isSignedIn(); }
+    match /configEntries/{id}  { allow read, write: if isSignedIn(); }
+    match /assessments/{id}    { allow read, write: if isSignedIn(); }
+    match /results/{id}        { allow read, write: if isSignedIn(); }
+    match /notifications/{id}  { allow read, write: if isSignedIn(); }
+    match /interviews/{id}     { allow read, write: if isSignedIn(); }
+    match /driveExpenses/{id}  { allow read, write: if isSignedIn(); }
+  }
+}

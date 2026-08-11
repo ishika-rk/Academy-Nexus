@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, Fragment } from "react";
-import { db, auth, googleProvider } from "./firebase";
+import { db, auth, googleProvider, storage } from "./firebase";
 import { collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc } from "firebase/firestore";
 import { onAuthStateChanged, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 
 // ─── Seed Data ────────────────────────────────────────────────────────────────
 
@@ -40,10 +41,15 @@ const getExamCategoryHead = (e) => {
 // ─── Roles & Permissions ──────────────────────────────────────────────────────
 const PERMISSIONS = {
   super_admin: ["*"],
-  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write"],
-  poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write"],
+  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "expenses.read"],
+  poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write", "expenses.read", "expenses.write"],
   content:     ["exam.read", "student.count", "configs.write", "generate"],
 };
+// Actions added after the settings/permissions doc was first seeded in Firestore — the
+// live doc only self-seeds from PERMISSIONS once (on first-ever creation), so any action
+// introduced later has to be topped up into an already-existing doc explicitly, or roles
+// other than super_admin silently never get it even though PERMISSIONS says they should.
+const NEW_PERMISSION_ACTIONS = ["expenses.read", "expenses.write"];
 let activePermissions = { ...PERMISSIONS };
 function can(role, action) {
   const perms = activePermissions[role] || [];
@@ -115,6 +121,7 @@ function getCompletenessInfo(exam) {
     if (!exam.mockSlot)      missing.push("Mock time slot");
   }
   if (exam.type === "Offline Placement Exam" && !exam.cycle) missing.push("Cycle number");
+  if (exam.type === "Offline Placement Exam" && !(exam.locations && exam.locations.length)) missing.push("Exam location");
   return { isComplete: missing.length === 0, missing };
 }
 
@@ -178,17 +185,24 @@ const STUDENT_COLUMN_CHECKS = [
   ["Email ID", /email/i],
 ];
 
-function missingStudentColumns(headers) {
-  return STUDENT_COLUMN_CHECKS.filter(([, re]) => !headers.some(h => re.test(h))).map(([label]) => label);
+// Offline drives can span multiple locations under one exam record/link — Location is
+// required per-student there so analytics/expense trackers can be sliced by venue.
+const OFFLINE_STUDENT_COLUMN_CHECKS = [
+  ["Location", /location|venue/i],
+];
+
+function missingStudentColumns(headers, isOffline = false) {
+  const checks = isOffline ? [...STUDENT_COLUMN_CHECKS, ...OFFLINE_STUDENT_COLUMN_CHECKS] : STUDENT_COLUMN_CHECKS;
+  return checks.filter(([, re]) => !headers.some(h => re.test(h))).map(([label]) => label);
 }
 
-function handleUploadFile(examId, file, uploads, onAddUpload) {
+function handleUploadFile(examId, file, uploads, onAddUpload, isOffline = false, examLocations = []) {
   if (!file) return Promise.resolve();
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       const { headers, rows } = parseCSV(e.target.result);
-      const missing = missingStudentColumns(headers);
+      const missing = missingStudentColumns(headers, isOffline);
       if (missing.length) {
         resolve({ fileName: file.name, missing });
         return;
@@ -209,7 +223,17 @@ function handleUploadFile(examId, file, uploads, onAddUpload) {
       await onAddUpload({ examId, fileName: file.name, uploadedAt: new Date().toISOString().split("T")[0], headers, rows: finalRows });
       const cleanCount = finalRows.filter(r => r._status !== "duplicate").length;
       const dupCount = finalRows.filter(r => r._status === "duplicate").length;
-      resolve({ fileName: file.name, cleanCount, dupCount });
+      let unknownLocations, unknownLocationCount;
+      if (isOffline && examLocations.length) {
+        const locKey = headers.find(h => /location|venue/i.test(h));
+        const known = new Set(examLocations.map(l => l.trim().toLowerCase()));
+        const badRows = finalRows.filter(r => r._status !== "duplicate" && locKey && r[locKey] && !known.has(r[locKey].trim().toLowerCase()));
+        if (badRows.length) {
+          unknownLocations = [...new Set(badRows.map(r => r[locKey].trim()))];
+          unknownLocationCount = badRows.length;
+        }
+      }
+      resolve({ fileName: file.name, cleanCount, dupCount, unknownLocations, unknownLocationCount });
     };
     reader.readAsText(file);
   });
@@ -217,12 +241,49 @@ function handleUploadFile(examId, file, uploads, onAddUpload) {
 
 const STUDENT_CSV_HEADERS = ["UID", "Name", "Phone Number", "Email ID"];
 
-function downloadStudentTemplate() {
-  const csv = [STUDENT_CSV_HEADERS].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+function downloadStudentTemplate(isOffline = false) {
+  const headers = isOffline ? [...STUDENT_CSV_HEADERS, "Location"] : STUDENT_CSV_HEADERS;
+  const csv = [headers].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
   a.download = "student-data-template.csv";
   a.click();
+}
+
+// ─── Drive Expenses ─────────────────────────────────────────────────────────
+
+const CATEGORY_KEYS = ["venue", "travel", "accommodation", "food"];
+const CATEGORY_LABELS = { venue: "Venue", travel: "Travel", accommodation: "Accommodation", food: "Food" };
+const SHARED_LOCATION = "Shared";
+
+const emptyExpenseCategories = () =>
+  CATEGORY_KEYS.reduce((acc, k) => ({ ...acc, [k]: { items: [] } }), {});
+
+function sumCategory(items) {
+  return (items ?? []).reduce((s, it) => s + (parseFloat(it.amount) || 0), 0);
+}
+
+function expenseGrandTotal(expenseDoc) {
+  if (!expenseDoc?.categories) return 0;
+  return CATEGORY_KEYS.reduce((s, k) => s + sumCategory(expenseDoc.categories[k]?.items), 0);
+}
+
+// Storage path: driveExpenses/{examId}/{category}/{timestamp}_{sanitizedFileName}
+function uploadReceipt(examId, category, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const path = `driveExpenses/${examId}/${category}/${Date.now()}_${file.name.replace(/[^\w.\-]/g, "_")}`;
+    const task = uploadBytesResumable(ref(storage, path), file);
+    task.on(
+      "state_changed",
+      snap => onProgress && onProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),
+      reject,
+      async () => resolve({ url: await getDownloadURL(task.snapshot.ref), path })
+    );
+  });
+}
+
+function deleteReceipt(path) {
+  return path ? deleteObject(ref(storage, path)).catch(() => {}) : Promise.resolve();
 }
 
 // Generate tags based on exam type, date, kind (Mock/Main), batch, cycle
@@ -874,6 +935,161 @@ function EmptyState({ icon, title, sub }) {
   );
 }
 
+// ─── Drive Expense form (shared by ExamDetailsPage's embedded entry point and ExpensesPage) ──
+
+const inputS = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, color: C.text, fontFamily: "inherit", outline: "none" };
+
+function ExpenseLineItemRow({ item, catKey, examId, locationOptions, disabled, onChange, onRemove }) {
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    onChange({ uploading: true, uploadProgress: 0 });
+    try {
+      const { url, path } = await uploadReceipt(examId, catKey, file, pct => onChange({ uploadProgress: pct }));
+      onChange({ receiptUrl: url, receiptPath: path, uploading: false });
+    } catch {
+      onChange({ uploading: false });
+    }
+  };
+  const removeReceipt = async () => {
+    if (item.receiptPath) await deleteReceipt(item.receiptPath);
+    onChange({ receiptUrl: "", receiptPath: "" });
+  };
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <input style={{ ...inputS, flex: 3 }} placeholder="Description" value={item.description} disabled={disabled}
+        onChange={e => onChange({ description: e.target.value })} />
+      <input style={{ ...inputS, width: 90 }} type="number" min="0" placeholder="₹" value={item.amount} disabled={disabled}
+        onChange={e => onChange({ amount: e.target.value })} />
+      <input style={{ ...inputS, width: 132 }} type="date" value={item.date || ""} disabled={disabled}
+        onChange={e => onChange({ date: e.target.value })} />
+      <select style={{ ...inputS, width: 140 }} value={item.location || SHARED_LOCATION} disabled={disabled}
+        onChange={e => onChange({ location: e.target.value })}>
+        {locationOptions.map(l => <option key={l} value={l}>{l}</option>)}
+      </select>
+      <div style={{ width: 118, flexShrink: 0, fontSize: 11 }}>
+        {item.receiptUrl ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <a href={item.receiptUrl} target="_blank" rel="noreferrer" style={{ color: C.accent, textDecoration: "underline" }}>Receipt</a>
+            {!disabled && <button onClick={removeReceipt} style={{ background: "none", border: "none", cursor: "pointer", color: C.red }}>✕</button>}
+          </div>
+        ) : item.uploading ? (
+          <span style={{ color: C.muted }}>Uploading… {item.uploadProgress || 0}%</span>
+        ) : !disabled ? (
+          <label style={{ color: C.accent, cursor: "pointer", textDecoration: "underline" }}>
+            Attach receipt
+            <input type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={handleFile} />
+          </label>
+        ) : <span style={{ color: C.muted }}>—</span>}
+      </div>
+      {!disabled && (
+        <button onClick={onRemove} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, flexShrink: 0 }}>✕</button>
+      )}
+    </div>
+  );
+}
+
+function ExpenseCategorySection({ catKey, items, examId, locationOptions, disabled, onChange }) {
+  const addItem = () => onChange([...items, {
+    id: crypto.randomUUID(), description: "", amount: "", location: locationOptions[0] || SHARED_LOCATION,
+    date: "", receiptUrl: "", receiptPath: "", addedAt: new Date().toISOString(),
+  }]);
+  const removeItem = (id) => onChange(items.filter(it => it.id !== id));
+  const updateItem = (id, patch) => onChange(items.map(it => it.id === id ? { ...it, ...patch } : it));
+  const total = sumCategory(items);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{CATEGORY_LABELS[catKey]}</span>
+          {total > 0 && <Badge color="gray">₹{total.toLocaleString("en-IN")}</Badge>}
+        </div>
+        {!disabled && <Btn size="sm" variant="ghost" onClick={addItem}>+ Add item</Btn>}
+      </div>
+      {items.length === 0 ? (
+        <div style={{ fontSize: 12, color: C.muted, fontStyle: "italic" }}>No {CATEGORY_LABELS[catKey].toLowerCase()} items yet</div>
+      ) : items.map(item => (
+        <ExpenseLineItemRow key={item.id} item={item} catKey={catKey} examId={examId} locationOptions={locationOptions}
+          disabled={disabled} onChange={patch => updateItem(item.id, patch)} onRemove={() => removeItem(item.id)} />
+      ))}
+    </div>
+  );
+}
+
+function ExpenseFormModal({ exam, expenseDoc, onSave, onClose, canWrite }) {
+  const [categories, setCategories] = useState(() => {
+    const base = emptyExpenseCategories();
+    if (!expenseDoc?.categories) return base;
+    return CATEGORY_KEYS.reduce((acc, k) => ({ ...acc, [k]: { items: (expenseDoc.categories[k]?.items || []).map(it => ({ ...it })) } }), base);
+  });
+  const [status, setStatus] = useState(expenseDoc?.status || "draft");
+  const [saving, setSaving] = useState(false);
+
+  const locationOptions = [...(exam?.locations || []), SHARED_LOCATION];
+  const disabled = !canWrite || status === "final";
+  const grandTotal = CATEGORY_KEYS.reduce((s, k) => s + sumCategory(categories[k].items), 0);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const cleaned = CATEGORY_KEYS.reduce((acc, k) => ({
+        ...acc,
+        [k]: {
+          items: categories[k].items
+            .filter(it => it.description || it.amount)
+            .map(({ uploading, uploadProgress, ...rest }) => ({ ...rest, amount: parseFloat(rest.amount) || 0 })),
+        },
+      }), {});
+      await onSave(cleaned, status);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={`Drive Expenses — ${exam?.type || ""}${exam?.cycle ? ` (Cycle ${exam.cycle})` : ""}`} onClose={onClose} width={760}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 12, color: C.muted }}>
+            {exam?.locations?.length > 0 ? `Locations: ${exam.locations.join(", ")}` : "No locations declared on this exam yet"}
+          </div>
+          <Badge color={status === "final" ? "green" : "gray"}>{status === "final" ? "Final" : "Draft"}</Badge>
+        </div>
+
+        <Divider />
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {CATEGORY_KEYS.map(k => (
+            <ExpenseCategorySection key={k} catKey={k} items={categories[k].items} examId={exam?.id}
+              locationOptions={locationOptions} disabled={disabled}
+              onChange={items => setCategories(c => ({ ...c, [k]: { items } }))} />
+          ))}
+        </div>
+
+        <div style={{ background: C.surfaceAlt, borderRadius: 8, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Grand Total</span>
+          <span style={{ fontSize: 18, fontWeight: 800, color: C.text }}>₹{grandTotal.toLocaleString("en-IN")}</span>
+        </div>
+
+        {canWrite && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 4 }}>
+            <button
+              onClick={() => setStatus(s => s === "final" ? "draft" : "final")}
+              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, color: C.accent, padding: 0 }}
+            >
+              {status === "final" ? "Reopen as Draft" : "Mark as Final"}
+            </button>
+            <Btn onClick={handleSave} disabled={saving}>{saving ? "Saving…" : "Save"}</Btn>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 // ─── Page: Exam Details ───────────────────────────────────────────────────────
 
 // Exam Title field: preset chips + free-type input
@@ -916,7 +1132,7 @@ function ExamTitleField({ value, onChange }) {
   );
 }
 
-function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNotify, onCancelExam, uploads, onAddUpload, onDeleteUpload, role, notifications, onAddNotification, onMarkNotifRead, onMarkAllNotifsRead, currentUserEmail }) {
+function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNotify, onCancelExam, uploads, onAddUpload, onDeleteUpload, role, notifications, onAddNotification, onMarkNotifRead, onMarkAllNotifsRead, currentUserEmail, expenses, onSaveExpense }) {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [originalForm, setOriginalForm] = useState(null);
@@ -927,6 +1143,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
   const [notifySent, setNotifySent] = useState(false);
   const [confirmNotify, setConfirmNotify] = useState(null);
   const [confirmCancel, setConfirmCancel] = useState(null);
+  const [expenseModalExam, setExpenseModalExam] = useState(null);
   const [programTab, setProgramTab] = useState("online");
   // Custom exam categories (anything the user typed into "Exam Category" that isn't one of the
   // fixed presets) get their own tab, derived live from whatever's actually been saved.
@@ -936,8 +1153,9 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
     { id: "offline", label: "Offline" },
     ...customCategoryIds.map(id => ({ id, label: id })),
   ];
-  const emptyForm = { type: "", requireMock: true, mockTitle: "", mainTitle: "", mockStartDate: "", mockEndDate: "", mainStartDate: "", mainEndDate: "", mockSlot: "", mainSlot: "", cycle: "", program: "online" };
+  const emptyForm = { type: "", requireMock: true, mockTitle: "", mainTitle: "", mockStartDate: "", mockEndDate: "", mainStartDate: "", mainEndDate: "", mockSlot: "", mainSlot: "", cycle: "", locations: [], program: "online" };
   const [form, setForm] = useState(emptyForm);
+  const [locationInput, setLocationInput] = useState("");
   const [filter, setFilter] = useState("all");
   const [filterCategory, setFilterCategory] = useState("");
   const [filterDateStart, setFilterDateStart] = useState("");
@@ -976,9 +1194,9 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
     // Opening "Add Exam" from a custom category's tab pre-fills that category so it doesn't have to be retyped.
     const prefillType = (programTab !== "online" && programTab !== "offline") ? programTab : "";
     setForm({ ...emptyForm, type: prefillType, program: deriveProgramForType(prefillType) });
-    setEditing(null); setOriginalForm(null); setPendingStudentFile(null); setShowModal(true);
+    setEditing(null); setOriginalForm(null); setPendingStudentFile(null); setLocationInput(""); setShowModal(true);
   };
-  const openEdit = (ex) => { setForm({ ...emptyForm, ...ex }); setEditing(ex.id); setOriginalForm({ ...emptyForm, ...ex }); setPendingStudentFile(null); setShowModal(true); };
+  const openEdit = (ex) => { setForm({ ...emptyForm, ...ex }); setEditing(ex.id); setOriginalForm({ ...emptyForm, ...ex }); setPendingStudentFile(null); setLocationInput(""); setShowModal(true); };
 
   const handleImportCSV = async (rows) => {
     await Promise.all(rows.map(r => addDoc(collection(db, "exams"), r)));
@@ -1004,7 +1222,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
     const formToSave = { ...form, program: deriveProgramForType(form.type) };
     const savedId = await onSaveExam(formToSave, editing);
     if (pendingStudentFile) {
-      const r = await handleUploadFile(savedId, pendingStudentFile, uploads, onAddUpload);
+      const r = await handleUploadFile(savedId, pendingStudentFile, uploads, onAddUpload, isOffline, form.locations || []);
       setPendingStudentFile(null);
       if (r) setUploadedResult(r);
     }
@@ -1354,6 +1572,38 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                       <tr>
                         <td colSpan={11} style={{ padding: 0, borderBottom: isLast ? "none" : `1px solid ${C.border}` }}>
                           <div style={{ padding: "14px 24px 16px 28px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
+                            {ex.type === "Offline Placement Exam" && ex.locations && ex.locations.length > 0 && (
+                              <div style={{ marginBottom: 12 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 4 }}>Exam Locations</div>
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                  {ex.locations.map(loc => (
+                                    <span key={loc} style={{ fontSize: 12, fontWeight: 600, color: C.text, background: C.accentLight, borderRadius: 999, padding: "3px 10px" }}>{loc}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {ex.type === "Offline Placement Exam" && can(role, "expenses.read") && (() => {
+                              const expenseDoc = (expenses || []).find(e => e.id === ex.id);
+                              const total = expenseGrandTotal(expenseDoc);
+                              return (
+                                <div style={{ marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px" }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Drive Expenses</span>
+                                    {expenseDoc ? (
+                                      <>
+                                        <span style={{ fontSize: 13, fontWeight: 800, color: C.text }}>₹{total.toLocaleString("en-IN")}</span>
+                                        <Badge color={expenseDoc.status === "final" ? "green" : "gray"}>{expenseDoc.status === "final" ? "Final" : "Draft"}</Badge>
+                                      </>
+                                    ) : (
+                                      <span style={{ fontSize: 12, color: C.muted }}>No expenses recorded yet</span>
+                                    )}
+                                  </div>
+                                  <Btn size="sm" variant="secondary" onClick={e => { e.stopPropagation(); setExpenseModalExam(ex); }}>
+                                    {can(role, "expenses.write") ? (expenseDoc ? "Edit Expenses" : "+ Add Expenses") : "View Expenses"}
+                                  </Btn>
+                                </div>
+                              );
+                            })()}
                             {/* Auto-generated tags */}
                             {(() => {
                               const { mockTag, mainTag } = genTags(ex, exams);
@@ -1429,10 +1679,10 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                                   )}
                                   <div style={{ display: "flex", gap: 8 }}>
                                     <input type="file" accept=".csv" ref={el => fileRefs.current[ex.id] = el} style={{ display: "none" }}
-                                      onChange={e => { const f = e.target.files[0]; e.target.value = ""; handleUploadFile(ex.id, f, uploads, onAddUpload).then(r => r && setUploadedResult(r)); }} />
+                                      onChange={e => { const f = e.target.files[0]; e.target.value = ""; handleUploadFile(ex.id, f, uploads, onAddUpload, ex.type === "Offline Placement Exam", ex.locations || []).then(r => r && setUploadedResult(r)); }} />
                                     <Btn variant="secondary" size="sm" onClick={e => { e.stopPropagation(); fileRefs.current[ex.id]?.click(); }}>Upload CSV</Btn>
                                     <Btn variant="secondary" size="sm" onClick={e => e.stopPropagation()}>Source from Database</Btn>
-                                    <button onClick={e => { e.stopPropagation(); downloadStudentTemplate(); }} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                    <button onClick={e => { e.stopPropagation(); downloadStudentTemplate(ex.type === "Offline Placement Exam"); }} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
                                       <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                                       Template
                                     </button>
@@ -1680,6 +1930,12 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                     </div>
                   )}
                 </div>
+                {uploadedResult.unknownLocationCount > 0 && (
+                  <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 8, padding: "12px 16px", fontSize: 12, color: "#92400e" }}>
+                    ⚠ {uploadedResult.unknownLocationCount} student{uploadedResult.unknownLocationCount > 1 ? "s" : ""} listed a Location not in this exam's declared locations: <b>{uploadedResult.unknownLocations.join(", ")}</b>.
+                    <div style={{ marginTop: 4 }}>Students were still added — add these locations to the exam or fix the CSV and re-upload.</div>
+                  </div>
+                )}
               </>
             )}
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
@@ -1687,6 +1943,16 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
             </div>
           </div>
         </Modal>
+      )}
+
+      {expenseModalExam && (
+        <ExpenseFormModal
+          exam={expenseModalExam}
+          expenseDoc={(expenses || []).find(e => e.id === expenseModalExam.id)}
+          onSave={(categories, status) => onSaveExpense(expenseModalExam.id, categories, status)}
+          onClose={() => setExpenseModalExam(null)}
+          canWrite={can(role, "expenses.write")}
+        />
       )}
 
       {confirmDelete && (
@@ -1965,7 +2231,43 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
               </div>
             )}
 
-            {/* Cycle (only for Offline) */}
+            {/* Locations + Cycle (only for Offline) — a single drive/cycle can span multiple venues,
+                with the per-student Location column in the CSV saying which venue each student goes to. */}
+            {needsCycle && (() => {
+              const addLocation = () => {
+                const v = locationInput.trim();
+                if (!v || (form.locations || []).includes(v)) { setLocationInput(""); return; }
+                setForm({ ...form, locations: [...(form.locations || []), v] });
+                setLocationInput("");
+              };
+              const removeLocation = (loc) => setForm({ ...form, locations: (form.locations || []).filter(l => l !== loc) });
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Exam Locations</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      value={locationInput}
+                      onChange={e => setLocationInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addLocation(); } }}
+                      placeholder="e.g. IIT Hyderabad"
+                      style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "9px 12px", fontSize: 13, color: C.text, fontFamily: "inherit", outline: "none" }}
+                    />
+                    <Btn variant="secondary" size="md" onClick={addLocation}>+ Add</Btn>
+                  </div>
+                  {(form.locations || []).length > 0 && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                      {form.locations.map(loc => (
+                        <span key={loc} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: C.accentLight, border: `1px solid ${C.border}`, borderRadius: 999, padding: "4px 6px 4px 12px", fontSize: 12, fontWeight: 600, color: C.text }}>
+                          {loc}
+                          <button onClick={() => removeLocation(loc)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 14, lineHeight: 1, padding: "0 4px" }}>×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <span style={{ fontSize: 11, color: C.muted }}>All venues for this drive/cycle. Which venue each student attends is set per-student via the Location column in the student CSV.</span>
+                </div>
+              );
+            })()}
             {needsCycle && (
               <Field label="Cycle Number" value={form.cycle} onChange={v => setForm({ ...form, cycle: v })} placeholder="e.g. 9" />
             )}
@@ -1995,11 +2297,11 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                     </div>
                   )}
                   <input type="file" accept=".csv" ref={modalFileRef} style={{ display: "none" }}
-                    onChange={e => { const f = e.target.files[0]; e.target.value = ""; handleUploadFile(editing, f, uploads, onAddUpload).then(r => r && setUploadedResult(r)); }} />
+                    onChange={e => { const f = e.target.files[0]; e.target.value = ""; handleUploadFile(editing, f, uploads, onAddUpload, isOffline, form.locations || []).then(r => r && setUploadedResult(r)); }} />
                   <div style={{ display: "flex", gap: 8 }}>
                     <Btn variant="secondary" size="sm" onClick={() => modalFileRef.current?.click()}>Upload CSV</Btn>
                     <Btn variant="secondary" size="sm">Source from Database</Btn>
-                    <button onClick={downloadStudentTemplate} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <button onClick={() => downloadStudentTemplate(isOffline)} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       Template
                     </button>
@@ -2022,7 +2324,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                       const reader = new FileReader();
                       reader.onload = (ev) => {
                         const { headers } = parseCSV(ev.target.result);
-                        const missing = missingStudentColumns(headers);
+                        const missing = missingStudentColumns(headers, isOffline);
                         if (missing.length) { setUploadedResult({ fileName: f.name, missing }); return; }
                         setPendingStudentFile(f);
                       };
@@ -2031,7 +2333,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <Btn variant="secondary" size="sm" onClick={() => modalFileRef.current?.click()}>Upload CSV</Btn>
                     <Btn variant="secondary" size="sm">Source from Database</Btn>
-                    <button onClick={downloadStudentTemplate} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <button onClick={() => downloadStudentTemplate(isOffline)} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                       Template
                     </button>
@@ -3445,6 +3747,260 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   );
 }
 
+// ─── Page: Drive Expenses ───────────────────────────────────────────────────────
+
+function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role }) {
+  const EXPENSES_PAGE_SIZE = 10;
+  const [expPage, setExpPage] = useState(1);
+  const [filterExamId, setFilterExamId] = useState("");
+  const [filterLocation, setFilterLocation] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [filterDateStart, setFilterDateStart] = useState("");
+  const [filterDateEnd, setFilterDateEnd] = useState("");
+  const [groupBy, setGroupBy] = useState("none"); // "none" | "category" | "location"
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerExamId, setPickerExamId] = useState("");
+  const [expenseModalExam, setExpenseModalExam] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  useEffect(() => { setExpPage(1); }, [filterExamId, filterLocation, filterStatus, filterDateStart, filterDateEnd]);
+
+  const offlineExams = (exams || []).filter(e => e.type === "Offline Placement Exam");
+  const examsWithoutExpense = offlineExams.filter(e => !(expenses || []).some(exp => exp.id === e.id));
+  const allLocations = [...new Set(offlineExams.flatMap(e => e.locations || []))].sort();
+
+  const examTitle = (exam) => exam ? `${exam.type}${exam.cycle ? ` — Cycle ${exam.cycle}` : ""}` : "Unknown exam";
+
+  // Records table — filtered by exam / status / date range (not location, since location is a per-line-item attribute).
+  const records = (expenses || [])
+    .map(exp => ({ ...exp, exam: offlineExams.find(e => e.id === exp.id) }))
+    .filter(r => r.exam)
+    .filter(r => {
+      if (filterExamId && r.id !== filterExamId) return false;
+      if (filterStatus && r.status !== filterStatus) return false;
+      if (filterDateStart && r.exam.mainStartDate && r.exam.mainStartDate < filterDateStart) return false;
+      if (filterDateEnd && r.exam.mainStartDate && r.exam.mainStartDate > filterDateEnd) return false;
+      return true;
+    })
+    .sort((a, b) => (b.exam.mainStartDate || "").localeCompare(a.exam.mainStartDate || ""));
+
+  // Flattened line items — used for summary cards, location grouping and CSV export (full granularity).
+  const flatItems = records.flatMap(r =>
+    CATEGORY_KEYS.flatMap(catKey =>
+      (r.categories?.[catKey]?.items || []).map(item => ({ ...item, category: catKey, examId: r.id, exam: r.exam }))
+    )
+  );
+  const filteredItems = flatItems.filter(it => !filterLocation || it.location === filterLocation);
+
+  const summary = {
+    ...CATEGORY_KEYS.reduce((acc, k) => ({ ...acc, [k]: filteredItems.filter(it => it.category === k).reduce((s, it) => s + (it.amount || 0), 0) }), {}),
+    total: filteredItems.reduce((s, it) => s + (it.amount || 0), 0),
+  };
+
+  const byLocation = allLocations.map(loc => ({
+    location: loc,
+    total: filteredItems.filter(it => it.location === loc).reduce((s, it) => s + (it.amount || 0), 0),
+  })).filter(l => l.total > 0);
+
+  const exportCSV = () => {
+    const sorted = [...filteredItems].sort((a, b) => {
+      if (groupBy === "category") return a.category.localeCompare(b.category) || (a.location || "").localeCompare(b.location || "");
+      if (groupBy === "location") return (a.location || "").localeCompare(b.location || "") || a.category.localeCompare(b.category);
+      return 0;
+    });
+    const headers = ["Exam", "Cycle", "Category", "Location", "Description", "Amount", "Date", "Status"];
+    const rows = sorted.map(it => [
+      it.exam.type, it.exam.cycle || "", CATEGORY_LABELS[it.category], it.location || "",
+      it.description || "", it.amount || 0, it.date || "", it.exam && expenses.find(e => e.id === it.examId)?.status || "",
+    ]);
+    const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `drive-expenses-${groupBy}-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+  };
+
+  const totalPages = Math.max(1, Math.ceil(records.length / EXPENSES_PAGE_SIZE));
+  const pageRecords = records.slice((expPage - 1) * EXPENSES_PAGE_SIZE, expPage * EXPENSES_PAGE_SIZE);
+  const hasFilters = filterExamId || filterLocation || filterStatus || filterDateStart || filterDateEnd;
+  const clearFilters = () => { setFilterExamId(""); setFilterLocation(""); setFilterStatus(""); setFilterDateStart(""); setFilterDateEnd(""); };
+
+  const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "10px 14px", whiteSpace: "nowrap" };
+  const tdS = { padding: "10px 14px", borderTop: `1px solid ${C.border}`, fontSize: 13 };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+        <div>
+          <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Drive Expenses</h1>
+          <p style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Single source of truth for Venue, Travel, Accommodation & Food costs across Offline Drives.</p>
+        </div>
+        {can(role, "expenses.write") && (
+          <Btn onClick={() => { setPickerExamId(""); setShowPicker(true); }} icon="+">Add Drive Expense</Btn>
+        )}
+      </div>
+
+      {/* Filters */}
+      <Card style={{ padding: 16, marginBottom: 20 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
+          <Field label="Exam / Cycle" value={filterExamId} onChange={setFilterExamId}
+            options={offlineExams.map(e => ({ v: e.id, l: examTitle(e) }))} />
+          <Field label="Location" value={filterLocation} onChange={setFilterLocation} options={allLocations} />
+          <Field label="Status" value={filterStatus} onChange={setFilterStatus} options={[{ v: "draft", l: "Draft" }, { v: "final", l: "Final" }]} />
+          <Field label="From" type="date" value={filterDateStart} onChange={setFilterDateStart} />
+          <Field label="To" type="date" value={filterDateEnd} onChange={setFilterDateEnd} />
+          {hasFilters && (
+            <button onClick={clearFilters} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit", padding: "9px 6px" }}>Clear filters</button>
+          )}
+        </div>
+      </Card>
+
+      {/* Summary + groupBy */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Group export by</div>
+        <div style={{ display: "flex", gap: 4, background: C.surfaceAlt, borderRadius: 8, padding: 4, border: `1px solid ${C.border}` }}>
+          {[{ id: "none", label: "None" }, { id: "category", label: "Category" }, { id: "location", label: "Location" }].map(g => (
+            <button key={g.id} onClick={() => setGroupBy(g.id)} style={{ background: groupBy === g.id ? C.surface : "transparent", border: "none", borderRadius: 6, padding: "5px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", color: groupBy === g.id ? C.text : C.muted, fontFamily: "inherit", boxShadow: groupBy === g.id ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>{g.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {groupBy === "location" && byLocation.length > 0 ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
+          {byLocation.map(l => (
+            <Card key={l.location} style={{ padding: 14, minWidth: 140 }}>
+              <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>{l.location}</p>
+              <p style={{ fontSize: 18, fontWeight: 800, color: C.text, margin: "4px 0 0" }}>₹{l.total.toLocaleString("en-IN")}</p>
+            </Card>
+          ))}
+          <Card style={{ padding: 14, minWidth: 140, background: C.accentLight }}>
+            <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>Grand Total</p>
+            <p style={{ fontSize: 18, fontWeight: 800, color: C.text, margin: "4px 0 0" }}>₹{summary.total.toLocaleString("en-IN")}</p>
+          </Card>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 20 }}>
+          {CATEGORY_KEYS.map(k => (
+            <Card key={k} style={{ padding: 14 }}>
+              <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>{CATEGORY_LABELS[k]}</p>
+              <p style={{ fontSize: 18, fontWeight: 800, color: C.text, margin: "4px 0 0" }}>₹{summary[k].toLocaleString("en-IN")}</p>
+            </Card>
+          ))}
+          <Card style={{ padding: 14, background: C.accentLight }}>
+            <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>Grand Total</p>
+            <p style={{ fontSize: 18, fontWeight: 800, color: C.text, margin: "4px 0 0" }}>₹{summary.total.toLocaleString("en-IN")}</p>
+          </Card>
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <button onClick={exportCSV} disabled={filteredItems.length === 0} style={{ display: "flex", alignItems: "center", gap: 6, background: filteredItems.length === 0 ? C.surfaceAlt : C.surface, border: `1.5px solid ${filteredItems.length === 0 ? C.border : C.accent}`, borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: filteredItems.length === 0 ? "not-allowed" : "pointer", color: filteredItems.length === 0 ? C.muted : C.accent, fontFamily: "inherit" }}>
+          Export CSV
+        </button>
+      </div>
+
+      {/* Records table */}
+      {records.length === 0 ? (
+        <EmptyState icon="💰" title="No drive expenses yet" sub="Add a drive expense to start building the central expense record." />
+      ) : (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: C.surfaceAlt }}>
+                {["Exam / Cycle", "Drive Date", "Locations", "Venue", "Travel", "Accomm.", "Food", "Total", "Status", ""].map(h => (
+                  <th key={h} style={thBase}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {pageRecords.map(r => (
+                <tr key={r.id}>
+                  <td style={tdS}>{examTitle(r.exam)}</td>
+                  <td style={{ ...tdS, color: C.muted }}>{fmtDate(r.exam.mainStartDate)}</td>
+                  <td style={{ ...tdS, color: C.muted }}>{(r.exam.locations || []).join(", ") || "—"}</td>
+                  <td style={tdS}>₹{sumCategory(r.categories?.venue?.items).toLocaleString("en-IN")}</td>
+                  <td style={tdS}>₹{sumCategory(r.categories?.travel?.items).toLocaleString("en-IN")}</td>
+                  <td style={tdS}>₹{sumCategory(r.categories?.accommodation?.items).toLocaleString("en-IN")}</td>
+                  <td style={tdS}>₹{sumCategory(r.categories?.food?.items).toLocaleString("en-IN")}</td>
+                  <td style={{ ...tdS, fontWeight: 800 }}>₹{expenseGrandTotal(r).toLocaleString("en-IN")}</td>
+                  <td style={tdS}><Badge color={r.status === "final" ? "green" : "gray"}>{r.status === "final" ? "Final" : "Draft"}</Badge></td>
+                  <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
+                    <Btn size="sm" variant="secondary" onClick={() => setExpenseModalExam(r.exam)}>
+                      {can(role, "expenses.write") ? "Edit" : "View"}
+                    </Btn>
+                    {can(role, "expenses.write") && (
+                      <button onClick={() => setConfirmDelete(r)} style={{ marginLeft: 8, background: "none", border: "none", cursor: "pointer", color: C.red, fontSize: 12 }}>Delete</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {totalPages > 1 && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderTop: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 12, color: C.muted }}>
+                {(expPage - 1) * EXPENSES_PAGE_SIZE + 1}–{Math.min(expPage * EXPENSES_PAGE_SIZE, records.length)} of {records.length}
+              </span>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <button onClick={() => setExpPage(p => Math.max(1, p - 1))} disabled={expPage === 1} style={{ border: `1px solid ${C.border}`, background: expPage === 1 ? C.surfaceAlt : "#fff", color: expPage === 1 ? C.muted : C.text, borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: expPage === 1 ? "default" : "pointer", fontFamily: "inherit" }}>← Prev</button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map(n => (
+                  <button key={n} onClick={() => setExpPage(n)} style={{ border: `1px solid ${n === expPage ? C.accent : C.border}`, background: n === expPage ? C.accent : "#fff", color: n === expPage ? "#fff" : C.text, borderRadius: 6, padding: "5px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", minWidth: 32 }}>{n}</button>
+                ))}
+                <button onClick={() => setExpPage(p => Math.min(totalPages, p + 1))} disabled={expPage === totalPages} style={{ border: `1px solid ${C.border}`, background: expPage === totalPages ? C.surfaceAlt : "#fff", color: expPage === totalPages ? C.muted : C.text, borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: expPage === totalPages ? "default" : "pointer", fontFamily: "inherit" }}>Next →</button>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Exam picker for "Add Drive Expense" */}
+      {showPicker && (
+        <Modal title="Add Drive Expense" onClose={() => setShowPicker(false)} width={420}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {examsWithoutExpense.length === 0 ? (
+              <p style={{ fontSize: 13, color: C.muted }}>Every Offline exam already has a drive expense record. Edit an existing one from the table, or add a new Offline exam first in Exam Details.</p>
+            ) : (
+              <Field label="Offline Exam" value={pickerExamId} onChange={setPickerExamId}
+                options={examsWithoutExpense.map(e => ({ v: e.id, l: examTitle(e) }))} />
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Btn variant="secondary" onClick={() => setShowPicker(false)}>Cancel</Btn>
+              <Btn disabled={!pickerExamId} onClick={() => {
+                const exam = examsWithoutExpense.find(e => e.id === pickerExamId);
+                setShowPicker(false);
+                setExpenseModalExam(exam);
+              }}>Continue</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {expenseModalExam && (
+        <ExpenseFormModal
+          exam={expenseModalExam}
+          expenseDoc={(expenses || []).find(e => e.id === expenseModalExam.id)}
+          onSave={(categories, status) => onSaveExpense(expenseModalExam.id, categories, status)}
+          onClose={() => setExpenseModalExam(null)}
+          canWrite={can(role, "expenses.write")}
+        />
+      )}
+
+      {confirmDelete && (
+        <Modal title="Delete Drive Expense" onClose={() => setConfirmDelete(null)} width={420}>
+          <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
+            Delete all recorded expenses for <strong>{examTitle(confirmDelete.exam)}</strong>? This removes every line item and receipt, and cannot be undone.
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDelete(null)}>Cancel</Btn>
+            <Btn variant="danger" onClick={async () => { await onDeleteExpense(confirmDelete.id); setConfirmDelete(null); }}>Delete</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // ─── Page: Interviews ──────────────────────────────────────────────────────────
 // Bucket A / NxtMock and Bucket A / TR1 have their table columns wired; everything
 // else is still header/tab structure only, pending decisions on data and sourcing.
@@ -3466,6 +4022,15 @@ const NXTMOCK_COLUMNS = [
   { key: "qualificationStatus", label: "Qualification Status" },
 ];
 
+// Colored segments for the scoring columns, matching the grouped-header treatment
+// used in the other buckets' tables.
+const TR1_GROUPS = {
+  problem1: { name: "Problem 1", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  problem2: { name: "Problem 2", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  dsaTheory: { name: "DSA Theory / Rapid Fire", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+  coreCsTheory: { name: "Core CS Theory / Rapid Fire", header: "#7030A0", headerText: "#fff", sub: "#E8DAEF", subText: "#1f2937" },
+};
+
 const TR1_COLUMNS = [
   { key: "candidateId", label: "Candidate ID" },
   { key: "candidateName", label: "Candidate Name" },
@@ -3475,26 +4040,117 @@ const TR1_COLUMNS = [
   { key: "panelistName", label: "Name of the Panelist" },
   { key: "recordingLink", label: "Interview Recording Link" },
   { key: "codingProblemAsked", label: "Coding Problem asked" },
-  { key: "p1ProblemSolvingRating", label: "Problem 1 - Problem Solving (Rating out of 5)" },
-  { key: "p1ProblemSolvingRemarks", label: "Problem 1 - Remarks on Problem Solving" },
-  { key: "p1CodeImplementationRating", label: "Problem 1 - Code Implementation (Rating out of 5)" },
-  { key: "p1CodeImplementationRemarks", label: "Problem 1 - Remarks on Code Implementation" },
-  { key: "p2ProblemSolvingRating", label: "Problem 2 - Problem Solving (Rating out of 5)" },
-  { key: "p2ProblemSolvingRemarks", label: "Problem 2 - Remarks on Problem Solving" },
-  { key: "p2CodeImplementationRating", label: "Problem 2 - Code Implementation (Rating out of 5)" },
-  { key: "p2CodeImplementationRemarks", label: "Problem 2 - Remarks on Code Implementation" },
-  { key: "dsaTheoryQ1", label: "DSA Theory/ rapid fire question 1" },
-  { key: "dsaTheoryQ1Remarks", label: "Remarks on DSA Theory/ rapid fire question 1" },
-  { key: "coreCsTheoryQ1", label: "Core CS Theory/ rapid fire question 1" },
-  { key: "coreCsTheoryQ1Remarks", label: "Remarks on Core CS Theory / rapid fire question 1" },
+  { key: "p1ProblemSolvingRating", label: "Problem 1 - Problem Solving (Rating out of 5)", group: TR1_GROUPS.problem1 },
+  { key: "p1ProblemSolvingRemarks", label: "Problem 1 - Remarks on Problem Solving", group: TR1_GROUPS.problem1 },
+  { key: "p1CodeImplementationRating", label: "Problem 1 - Code Implementation (Rating out of 5)", group: TR1_GROUPS.problem1 },
+  { key: "p1CodeImplementationRemarks", label: "Problem 1 - Remarks on Code Implementation", group: TR1_GROUPS.problem1 },
+  { key: "p2ProblemSolvingRating", label: "Problem 2 - Problem Solving (Rating out of 5)", group: TR1_GROUPS.problem2 },
+  { key: "p2ProblemSolvingRemarks", label: "Problem 2 - Remarks on Problem Solving", group: TR1_GROUPS.problem2 },
+  { key: "p2CodeImplementationRating", label: "Problem 2 - Code Implementation (Rating out of 5)", group: TR1_GROUPS.problem2 },
+  { key: "p2CodeImplementationRemarks", label: "Problem 2 - Remarks on Code Implementation", group: TR1_GROUPS.problem2 },
+  { key: "dsaTheoryQ1", label: "DSA Theory/ rapid fire question 1", group: TR1_GROUPS.dsaTheory },
+  { key: "dsaTheoryQ1Remarks", label: "Remarks on DSA Theory/ rapid fire question 1", group: TR1_GROUPS.dsaTheory },
+  { key: "coreCsTheoryQ1", label: "Core CS Theory/ rapid fire question 1", group: TR1_GROUPS.coreCsTheory },
+  { key: "coreCsTheoryQ1Remarks", label: "Remarks on Core CS Theory / rapid fire question 1", group: TR1_GROUPS.coreCsTheory },
   { key: "overallComments", label: "Overall Comments" },
   { key: "totalScore", label: "Total Score (out of 100)" },
   { key: "finalStatus", label: "Final Status" },
 ];
 
+// Bucket B / TR1 groups its scoring columns under three colored part headers,
+// matching the interviewer scorecard template (see BUCKET_B_TR1_GROUPS below).
+const BUCKET_B_TR1_GROUPS = {
+  part1: { name: "Part 1: Take-Home Assignment Drill-Down", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  part2: { name: "Part 2: Frontend Conceptual Discussion", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  part3: { name: "Part 3: React Live Coding", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+};
+
+const BUCKET_B_TR1_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "candidateResume", label: "Candidate Resume" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "solutionOwnershipDepth", label: "Solution Ownership & Depth", group: BUCKET_B_TR1_GROUPS.part1 },
+  { key: "architecturalDecisionsTradeoffs", label: "Architectural Decisions & Trade-offs", group: BUCKET_B_TR1_GROUPS.part1 },
+  { key: "edgeCasesLimitationsAwareness", label: "Edge Cases & Limitations Awareness", group: BUCKET_B_TR1_GROUPS.part1 },
+  { key: "part1Avg", label: "Part 1 Avg", group: BUCKET_B_TR1_GROUPS.part1 },
+  { key: "javascript", label: "JavaScript", group: BUCKET_B_TR1_GROUPS.part2 },
+  { key: "react", label: "React", group: BUCKET_B_TR1_GROUPS.part2 },
+  { key: "htmlCssWeb", label: "HTML + CSS + Web", group: BUCKET_B_TR1_GROUPS.part2 },
+  { key: "restApis", label: "REST APIs", group: BUCKET_B_TR1_GROUPS.part2 },
+  { key: "part2Avg", label: "Part 2 Avg", group: BUCKET_B_TR1_GROUPS.part2 },
+  { key: "problemBreakdownPlanning", label: "Problem Breakdown & Planning", group: BUCKET_B_TR1_GROUPS.part3 },
+  { key: "reactHooksUsage", label: "React & Hooks Usage", group: BUCKET_B_TR1_GROUPS.part3 },
+  { key: "codeStructureClarity", label: "Code Structure & Clarity", group: BUCKET_B_TR1_GROUPS.part3 },
+  { key: "part3Avg", label: "Part 3 Avg", group: BUCKET_B_TR1_GROUPS.part3 },
+  { key: "finalScore", label: "Final Score" },
+  { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "status", label: "Status" },
+];
+
+const BUCKET_B_TR2_GROUPS = {
+  part1: { name: "Part 1: Resume-Based Drill-Down", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  part2: { name: "Part 2: DSA Problem Solving", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+};
+
+const BUCKET_B_TR2_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "candidateResume", label: "Candidate Resume" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "depthAuthenticity", label: "Depth & Authenticity", group: BUCKET_B_TR2_GROUPS.part1 },
+  { key: "technicalDecisionsTradeoffs", label: "Technical Decisions & Trade-offs", group: BUCKET_B_TR2_GROUPS.part1 },
+  { key: "failuresLimitationsReasoning", label: "Failures / Limitations Reasoning", group: BUCKET_B_TR2_GROUPS.part1 },
+  { key: "part1Avg", label: "Part 1 Avg", group: BUCKET_B_TR2_GROUPS.part1 },
+  { key: "approachReasoning", label: "Approach & Reasoning", group: BUCKET_B_TR2_GROUPS.part2 },
+  { key: "edgeCasesCorrectness", label: "Edge Cases & Correctness", group: BUCKET_B_TR2_GROUPS.part2 },
+  { key: "complexityAwareness", label: "Complexity Awareness", group: BUCKET_B_TR2_GROUPS.part2 },
+  { key: "part2Avg", label: "Part 2 Avg", group: BUCKET_B_TR2_GROUPS.part2 },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score" },
+  { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "status", label: "Status" },
+];
+
+const BUCKET_C_GROUPS = {
+  part1: { name: "Part 1: Resume-Based Drill-Down", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  part2: { name: "Part 2: Problem Solving", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+};
+
+const BUCKET_C_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "candidateResume", label: "Candidate Resume" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "depthAuthenticity", label: "Depth & Authenticity", group: BUCKET_C_GROUPS.part1 },
+  { key: "technicalDecisionsTradeoffs", label: "Technical Decisions & Trade-offs", group: BUCKET_C_GROUPS.part1 },
+  { key: "failuresLimitationsReasoning", label: "Failures / Limitations Reasoning", group: BUCKET_C_GROUPS.part1 },
+  { key: "part1Avg", label: "Part 1 Avg", group: BUCKET_C_GROUPS.part1 },
+  { key: "approachReasoning", label: "Approach & Reasoning", group: BUCKET_C_GROUPS.part2 },
+  { key: "edgeCasesCorrectness", label: "Edge Cases & Correctness", group: BUCKET_C_GROUPS.part2 },
+  { key: "complexityAwareness", label: "Complexity Awareness", group: BUCKET_C_GROUPS.part2 },
+  { key: "part2Avg", label: "Part 2 Avg", group: BUCKET_C_GROUPS.part2 },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score" },
+  { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "status", label: "Status" },
+];
+
 const INTERVIEW_TABLE_COLUMNS = {
   "A:NxtMock": { columns: NXTMOCK_COLUMNS, source: "the Dashboard via a service account" },
   "A:TR1": { columns: TR1_COLUMNS, source: "the Interview App" },
+  "C:": { columns: BUCKET_C_COLUMNS, source: "the Interview App" },
+  "B:TR1": { columns: BUCKET_B_TR1_COLUMNS, source: "the Interview App" },
+  "B:TR2": { columns: BUCKET_B_TR2_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
@@ -3502,22 +4158,61 @@ const INTERVIEW_TABLE_COLUMNS = {
 // table (and any added later) so a long header can't blow up the column width.
 const INTERVIEW_COL_WIDTH = 170;
 
+// Consecutive columns sharing the same group become one spanning header cell;
+// ungrouped columns get a single header cell that spans both header rows.
+function buildGroupedHeaderSegments(columns) {
+  const segments = [];
+  for (const col of columns) {
+    const last = segments[segments.length - 1];
+    if (col.group && last && last.group === col.group) last.cols.push(col);
+    else segments.push({ group: col.group || null, cols: [col] });
+  }
+  return segments;
+}
+
+const INTERVIEW_PAGE_SIZE = 10;
+
 function InterviewDataTable({ columns, rows, source }) {
   const [expanded, setExpanded] = useState(null); // { label, value } | null
+  const [page, setPage] = useState(1);
+  const hasGroups = columns.some(c => c.group);
+  const segments = hasGroups ? buildGroupedHeaderSegments(columns) : null;
+  const totalPages = Math.max(1, Math.ceil(rows.length / INTERVIEW_PAGE_SIZE));
+  const pageRows = rows.slice((page - 1) * INTERVIEW_PAGE_SIZE, page * INTERVIEW_PAGE_SIZE);
 
-  const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", border: `1px solid ${C.border}`, padding: "8px 10px", textAlign: "left", color: C.muted, width: INTERVIEW_COL_WIDTH, minWidth: INTERVIEW_COL_WIDTH, maxWidth: INTERVIEW_COL_WIDTH, whiteSpace: "normal", lineHeight: 1.4 };
+  const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", border: `1px solid ${C.border}`, padding: "8px 10px", textAlign: "left", color: C.muted, whiteSpace: "normal", lineHeight: 1.4 };
   const tdBase = { border: `1px solid ${C.border}`, padding: "8px 10px", width: INTERVIEW_COL_WIDTH, minWidth: INTERVIEW_COL_WIDTH, maxWidth: INTERVIEW_COL_WIDTH, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.text };
 
   return (
     <>
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
         <table style={{ borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
+          <colgroup>
+            {columns.map(col => <col key={col.key} style={{ width: INTERVIEW_COL_WIDTH }} />)}
+          </colgroup>
           <thead>
-            <tr style={{ background: C.surfaceAlt }}>
-              {columns.map(col => (
-                <th key={col.key} style={thBase}>{col.label}</th>
-              ))}
-            </tr>
+            {hasGroups ? (
+              <>
+                <tr>
+                  {segments.map((seg, i) => seg.group ? (
+                    <th key={i} colSpan={seg.cols.length} style={{ ...thBase, textAlign: "center", background: seg.group.header, color: seg.group.headerText, border: `1px solid ${seg.group.header}` }}>{seg.group.name}</th>
+                  ) : (
+                    <th key={i} rowSpan={2} style={{ ...thBase, background: C.surfaceAlt }}>{seg.cols[0].label}</th>
+                  ))}
+                </tr>
+                <tr>
+                  {segments.filter(seg => seg.group).flatMap((seg, si) => seg.cols.map((col, ci) => (
+                    <th key={`${si}-${ci}`} style={{ ...thBase, textAlign: "center", background: seg.group.sub, color: seg.group.subText }}>{col.label}</th>
+                  )))}
+                </tr>
+              </>
+            ) : (
+              <tr style={{ background: C.surfaceAlt }}>
+                {columns.map(col => (
+                  <th key={col.key} style={thBase}>{col.label}</th>
+                ))}
+              </tr>
+            )}
           </thead>
           <tbody>
             {rows.length === 0 ? (
@@ -3526,7 +4221,7 @@ function InterviewDataTable({ columns, rows, source }) {
                   No data yet — this will populate from {source}.
                 </td>
               </tr>
-            ) : rows.map((row, i) => (
+            ) : pageRows.map((row, i) => (
               <tr key={row.id ?? i} style={{ background: i % 2 === 0 ? "#fff" : C.surfaceAlt }}>
                 {columns.map(col => {
                   const value = row[col.key];
@@ -3547,6 +4242,30 @@ function InterviewDataTable({ columns, rows, source }) {
           </tbody>
         </table>
       </div>
+
+      {rows.length > 0 && totalPages > 1 && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14, padding: "0 2px" }}>
+          <span style={{ fontSize: 12, color: C.muted }}>
+            {(page - 1) * INTERVIEW_PAGE_SIZE + 1}–{Math.min(page * INTERVIEW_PAGE_SIZE, rows.length)} of {rows.length}
+          </span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: page === 1 ? "not-allowed" : "pointer", color: page === 1 ? C.muted : C.text, fontFamily: "inherit" }}>
+              ← Prev
+            </button>
+            {Array.from({ length: totalPages }, (_, k) => k + 1).map(pg => (
+              <button key={pg} onClick={() => setPage(pg)}
+                style={{ background: pg === page ? C.accent : C.surface, border: `1px solid ${pg === page ? C.accent : C.border}`, borderRadius: 7, padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: pg === page ? "#fff" : C.text, fontFamily: "inherit" }}>
+                {pg}
+              </button>
+            ))}
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: page === totalPages ? "not-allowed" : "pointer", color: page === totalPages ? C.muted : C.text, fontFamily: "inherit" }}>
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
 
       {expanded && (
         <Modal title={expanded.label} onClose={() => setExpanded(null)}>
@@ -3589,7 +4308,7 @@ function InterviewsPage() {
       )}
 
       {activeTable ? (
-        <InterviewDataTable columns={activeTable.columns} rows={activeTable.rows || []} source={activeTable.source} />
+        <InterviewDataTable key={`${bucketTab}:${subTab}`} columns={activeTable.columns} rows={activeTable.rows || []} source={activeTable.source} />
       ) : (
         <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
       )}
@@ -3947,6 +4666,8 @@ const PERMISSION_ROWS = [
   { group: "Configs",    action: "configs.assessmentLink", label: "Edit assessment links in Config Library" },
   { group: "Generation", action: "generate",      label: "Generate assessments" },
   { group: "Results",    action: "results.write", label: "Import results / send to interview" },
+  { group: "Drive Expenses", action: "expenses.read",  label: "View drive expenses" },
+  { group: "Drive Expenses", action: "expenses.write", label: "Add / edit / delete drive expenses" },
   { group: "Admin",      action: "team",          label: "Manage team & roles", superAdminOnly: true },
 ];
 
@@ -4303,6 +5024,7 @@ const NAV = [
   { id: "generate", label: "Assessment Generation", icon: "🚀" },
   { id: "results",  label: "Results",               icon: "🏆" },
   { id: "interviews", label: "Interviews",          icon: "🎤" },
+  { id: "expenses", label: "Drive Expenses",        icon: "💰" },
   { id: "team",     label: "Team & Roles",          icon: "🔑" },
 ];
 
@@ -4313,6 +5035,7 @@ export default function App() {
   const [configEntries, setConfigEntries] = useState([]);
   const [publishedAssessments, setPublishedAssessments] = useState([]);
   const [results, setResults] = useState([]);
+  const [expenses, setExpenses] = useState([]);
   const [rolesList, setRolesList] = useState([]);
   const [livePerms, setLivePerms] = useState(PERMISSIONS);
   const [notifications, setNotifications] = useState([]);
@@ -4379,6 +5102,9 @@ export default function App() {
       onSnapshot(collection(db, "results"), snap =>
         setResults(snap.docs.map(d => ({ id: d.id, ...d.data() })))
       ),
+      onSnapshot(collection(db, "driveExpenses"), snap =>
+        setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      ),
       onSnapshot(collection(db, "roles"), snap =>
         setRolesList(snap.docs.map(d => ({ email: d.id, ...d.data() })))
       ),
@@ -4389,10 +5115,25 @@ export default function App() {
         setAccessRequests(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt)))
       ),
       onSnapshot(doc(db, "settings", "permissions"), snap => {
-        const data = snap.exists() ? snap.data() : PERMISSIONS;
+        let data = snap.exists() ? snap.data() : PERMISSIONS;
+        if (!snap.exists()) {
+          setDoc(doc(db, "settings", "permissions"), PERMISSIONS);
+        } else {
+          let changed = false;
+          const topped = {};
+          for (const role of Object.keys(PERMISSIONS)) {
+            const current = data[role] || [];
+            const missing = current.includes("*") ? [] : NEW_PERMISSION_ACTIONS.filter(a => !current.includes(a));
+            topped[role] = missing.length ? [...current, ...missing] : current;
+            if (missing.length) changed = true;
+          }
+          if (changed) {
+            data = { ...data, ...topped };
+            setDoc(doc(db, "settings", "permissions"), data, { merge: true });
+          }
+        }
         activePermissions = data;
         setLivePerms(data);
-        if (!snap.exists()) setDoc(doc(db, "settings", "permissions"), PERMISSIONS);
       }),
     ];
     return () => unsubs.forEach(u => u());
@@ -4461,6 +5202,30 @@ export default function App() {
 
   const onDeleteExam = async (id) => {
     await deleteDoc(doc(db, "exams", id));
+  };
+
+  const onSaveExpense = async (examId, categories, status) => {
+    const exam = exams.find(e => e.id === examId);
+    const existing = expenses.find(e => e.id === examId);
+    await setDoc(doc(db, "driveExpenses", examId), {
+      examId,
+      examType: exam?.type || null,
+      status,
+      categories,
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      createdBy: existing?.createdBy || currentUser?.email || "",
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.email || "",
+    }, { merge: true });
+  };
+
+  const onDeleteExpense = async (examId) => {
+    const rec = expenses.find(e => e.id === examId);
+    if (rec) {
+      const paths = Object.values(rec.categories || {}).flatMap(c => (c.items || []).map(i => i.receiptPath).filter(Boolean));
+      await Promise.all(paths.map(deleteReceipt));
+    }
+    await deleteDoc(doc(db, "driveExpenses", examId));
   };
 
   const onUndoDelete = async (exam) => {
@@ -4562,6 +5327,7 @@ export default function App() {
   const visibleNav = NAV.filter(n => {
     if (n.id === "generate") return can(role, "generate");
     if (n.id === "team")     return role === "super_admin";
+    if (n.id === "expenses") return can(role, "expenses.read");
     return true;
   });
 
@@ -4663,11 +5429,12 @@ export default function App() {
       {/* Main content */}
       <div style={{ marginLeft: 230, flex: 1, minWidth: 0 }}>
         <div style={{ padding: "32px 32px" }}>
-          {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
+          {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} />}
           {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} role={role} />}
           {page === "interviews" && <InterviewsPage />}
+          {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
         </div>
       </div>
