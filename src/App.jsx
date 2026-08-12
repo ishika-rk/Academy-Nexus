@@ -4366,17 +4366,15 @@ function InterviewsPage() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Interviews</h1>
-        {isAcademySlot && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 11, color: C.muted }}>
-              Updates live as interviews are completed{lastSyncedAt ? ` · Last full sync ${new Date(lastSyncedAt).toLocaleString()}` : ""}
-            </span>
-            <Btn variant="secondary" onClick={syncNow} disabled={syncing}>{syncing ? "Syncing…" : "Sync Now"}</Btn>
-          </div>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 11, color: C.muted }}>
+            Pulls all Academy interviews from the Interview Coordinator App{lastSyncedAt ? ` · Last synced ${new Date(lastSyncedAt).toLocaleString()}` : ""}
+          </span>
+          <Btn variant="secondary" onClick={syncNow} disabled={syncing}>{syncing ? "Syncing…" : "Sync Now"}</Btn>
+        </div>
       </div>
 
-      {isAcademySlot && syncBannerError && (
+      {syncBannerError && (
         <div style={{ marginBottom: 16, fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "10px 14px" }}>{syncBannerError}</div>
       )}
 
