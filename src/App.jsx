@@ -4319,7 +4319,10 @@ function academyCommonFields(iv) {
     interviewDate: iv.scheduledDate || "",
     interviewStartTime: iv.scheduledTime || "",
     panelistName: iv.interviewerEmail || "",
-    recordingLink: iv.meetLink || "",
+    // meetLink (the only URL in the synced payload, confirmed via an exhaustive raw-data search
+    // 2026-08-13) is the live Google Meet join link, NOT a recording — confirmed with the user.
+    // No separate recording link exists anywhere in this doc; left blank rather than mislabeled.
+    recordingLink: "",
   };
 }
 
