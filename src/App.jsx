@@ -4371,14 +4371,41 @@ function titleCaseKey(key) {
 // doesn't say what was actually flagged. Field labels are title-cased from their raw keys rather
 // than matched word-for-word to the Interview Coordinator App's own phrasing (unconfirmed) — the
 // values themselves are exact.
+// Exact question wording + order from the Interview Coordinator App's own integrity checklist UI
+// (confirmed via screenshot, 2026-08-13) — field_gby0a is the one item without a semantic raw key
+// (likely a form field added later via the app's builder, which auto-generates an ID instead of
+// a name), matched by elimination since it's the only unmatched key against the only unmatched
+// question ("Appropriate Dress Code & Professional Conduct").
+const INTEGRITY_CHECK_LABELS = [
+  ["camera_compliance", "Student camera is ON"],
+  ["screen_sharing", "Screen sharing is enabled"],
+  ["single_desktop", "Only one virtual desktop/workspace is in use"],
+  ["browser_extensions", "Browser extensions are verified"],
+  ["mobile_position", "Mobile is positioned correctly"],
+  ["room_laptop_scan", "Room and laptop setup scan is completed"],
+  ["bluetooth_compliance", "No Bluetooth/wireless audio devices are in use"],
+  ["av_quality", "Audio and video quality is acceptable"],
+  ["no_suspicious_behavior", "No suspicious behavior is observed"],
+  ["field_gby0a", "Appropriate Dress Code & Professional Conduct"],
+];
+
+// Human-readable breakdown of the automated proctoring/compliance checks (domains.integrity) —
+// shown in a popup when clicking the Interview Integrity Score cell, since the score alone
+// doesn't say what was actually flagged.
 function formatIntegrityDetails(integrity) {
   if (!integrity) return "No integrity details available.";
-  const skip = new Set(["cards", "domain_rating", "integrity_remarks"]);
-  const lines = Object.entries(integrity)
-    .filter(([k]) => !skip.has(k))
-    .map(([k, v]) => `${titleCaseKey(k)}: ${v}`);
-  if (integrity.integrity_remarks) lines.push(`Remarks: ${integrity.integrity_remarks}`);
-  return lines.join("\n") || "No integrity details available.";
+  const yesNo = (v) => (v === "1" ? "Yes" : v === "0" ? "No" : v);
+  const known = new Set(INTEGRITY_CHECK_LABELS.map(([k]) => k));
+  const lines = INTEGRITY_CHECK_LABELS
+    .filter(([k]) => integrity[k] !== undefined)
+    .map(([k, label]) => `${label}: ${yesNo(integrity[k])}`);
+  // Any field not in the confirmed list (future/unseen checklist items) still shows, generically.
+  const skip = new Set(["cards", "domain_rating", "integrity_remarks", ...known]);
+  for (const [k, v] of Object.entries(integrity)) {
+    if (!skip.has(k)) lines.push(`${titleCaseKey(k)}: ${yesNo(v)}`);
+  }
+  lines.push(`Overall Integrity Remarks: ${integrity.integrity_remarks || "—"}`);
+  return lines.join("\n");
 }
 
 function fillRubricColumns(row, iv, columns) {
