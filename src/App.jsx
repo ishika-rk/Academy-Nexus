@@ -4499,7 +4499,10 @@ function InterviewsPage() {
         headers: { Authorization: `Bearer ${idToken}` },
       });
       const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
+      if (!res.ok || !data.ok) {
+        if (data.debugMessage) console.error("[debug sync error]", data.debugMessage, data.debugStack);
+        throw new Error(data.error || "Sync failed");
+      }
       setLastSyncedAt(data.syncedAt || new Date().toISOString());
     } catch (err) {
       setSyncError(err.message || "Sync failed");
