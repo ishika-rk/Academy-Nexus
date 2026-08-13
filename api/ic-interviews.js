@@ -110,8 +110,10 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, count: interviews.length, syncedAt });
   } catch (err) {
     console.error("ic-interviews error:", err);
-    // TEMP debug (2026-08-13): surfacing the real error message/stack to diagnose a fresh sync
-    // failure — revert to the generic message once resolved (don't leak internals long-term).
-    return res.status(500).json({ ok: false, error: "Failed to sync interviews", debugMessage: err.message, debugStack: err.stack });
+    const isQuotaError = /RESOURCE_EXHAUSTED|Quota exceeded/i.test(err.message || "");
+    const error = isQuotaError
+      ? "Firestore quota/rate limit hit — wait a few minutes and try again."
+      : "Failed to sync interviews";
+    return res.status(500).json({ ok: false, error });
   }
 }
