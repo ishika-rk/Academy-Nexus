@@ -4349,11 +4349,12 @@ const RUBRIC_FIELD_KEY_OVERRIDES = {
   edgeCasesCorrectness: "edge_cases",
 };
 
-// Interview Integrity Score comes from a separate "integrity" domain (proctoring/compliance
-// checks — av_quality, camera_compliance, screen_sharing, etc.), not one of the rubric part
-// domains — confirmed via a live debug dump of Bucket B / TR2 data, 2026-08-13.
+// The manually-rated Interview Integrity Score — NOT domains.integrity.domain_rating (that's a
+// separate 0-1 average of automated proctoring compliance checks; despite the similar name it's
+// unrelated and can never reach a value like "5"). Confirmed via a live debug search of the raw
+// feedback payload, 2026-08-13.
 function integrityScore(iv) {
-  return iv.domains?.integrity?.domain_rating ?? "";
+  return iv.integrityScore ?? "";
 }
 
 function fillRubricColumns(row, iv, columns) {

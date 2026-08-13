@@ -86,13 +86,11 @@ export default async function handler(req, res) {
         // App names them (lowercase, strip punctuation, join with "_") — confirmed against a
         // real Bucket B / TR1 submission, 2026-08-13.
         domains: feedback.domains || null,
-        // TEMP debug (2026-08-13): a manually-rated "Integrity Score" the Interview Coordinator
-        // App shows (e.g. "5" for one candidate) doesn't match domains.integrity.domain_rating
-        // (which is a 0-1 average of automated proctoring compliance checks, mathematically can't
-        // be 5) — capturing the full raw doc + feedback object to find where that score actually
-        // lives. Remove _rawDoc/_rawFeedback once found.
-        _rawDoc: r,
-        _rawFeedback: feedback,
+        // The manually-rated Integrity Score shown in the Interview Coordinator App's own UI —
+        // NOT domains.integrity.domain_rating (that's a separate 0-1 average of automated
+        // proctoring compliance checks, unrelated despite the similar name). Confirmed via a live
+        // debug search of the raw feedback payload, 2026-08-13.
+        integrityScore: feedback.integrityScore ?? null,
       };
     });
 
