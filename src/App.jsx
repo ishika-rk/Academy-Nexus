@@ -4342,8 +4342,12 @@ function fillRubricColumns(row, iv, columns) {
   const domains = iv.domains || {};
   for (const col of columns) {
     if (!col.group || row[col.key] !== undefined) continue;
-    const card = domains[groupNameToDomainKey(col.group.name)]?.cards?.[0] || {};
-    row[col.key] = /Avg$/.test(col.key) ? (card.domain_rating ?? "") : (card[labelToFieldKey(col.label)] ?? "");
+    const domain = domains[groupNameToDomainKey(col.group.name)] || {};
+    // domain_rating (the part average) lives on the domain object itself, as a sibling of
+    // `cards` — NOT inside cards[0] like the individual per-rating fields. Confirmed via a live
+    // debug dump 2026-08-13 (individual ratings were populating correctly; Avg columns weren't,
+    // because this originally read card.domain_rating instead of domain.domain_rating).
+    row[col.key] = /Avg$/.test(col.key) ? (domain.domain_rating ?? "") : (domain.cards?.[0]?.[labelToFieldKey(col.label)] ?? "");
   }
   return row;
 }
