@@ -4442,6 +4442,7 @@ function InterviewsPage() {
         headers: { Authorization: `Bearer ${idToken}` },
       });
       const data = await res.json();
+      console.log("[debug sync response]", data);
       if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
       setLastSyncedAt(data.syncedAt || new Date().toISOString());
     } catch (err) {
