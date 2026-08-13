@@ -80,10 +80,12 @@ export default async function handler(req, res) {
         feedbackSubmittedAt: feedback.submittedAt || "",
         completedAt: feedback.submittedAt || r.updatedAt || "",
         updatedAt: r.updatedAt || "",
-        // TEMP debug (2026-08-13): capturing the full raw feedback object so we can see its
-        // actual shape (per-part rubric scores, integrity score, recording link) and build a
-        // real mapping — remove this field + the App.jsx debug log once that mapping is added.
-        _rawFeedback: feedback,
+        // Per-part rubric scores, keyed by domain (e.g. "take_home_assignment_drill_down" ->
+        // { cards: [{ <rating fields...>, domain_rating }] }). The App.jsx table builders derive
+        // each column's domain/field key from its label the same way the Interview Coordinator
+        // App names them (lowercase, strip punctuation, join with "_") — confirmed against a
+        // real Bucket B / TR1 submission, 2026-08-13.
+        domains: feedback.domains || null,
       };
     });
 

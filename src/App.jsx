@@ -4320,19 +4320,38 @@ function academyCommonFields(iv) {
 
 // Bucket B/TR2 and Bucket C share an identical column schema (see BUCKET_B_TR2_COLUMNS /
 // BUCKET_C_COLUMNS above), so they share one row builder.
-function academyBucketCShapeRow(iv) {
-  return {
-    ...academyCommonFields(iv),
-    depthAuthenticity: "", technicalDecisionsTradeoffs: "", failuresLimitationsReasoning: "", part1Avg: "",
-    approachReasoning: "", edgeCasesCorrectness: "", complexityAwareness: "", part2Avg: "",
-    overallRemarks: iv.remarks || "",
-    finalScore: iv.finalVerdict ?? "",
-    interviewIntegrityScore: "",
-    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
-  };
+function labelToFieldKey(label) {
+  return (label || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+function groupNameToDomainKey(groupName) {
+  return labelToFieldKey((groupName || "").replace(/^Part \d+:\s*/, ""));
+}
+
+// Fills every rubric column (any column with a `group`) on a row from the Interview Coordinator
+// App's domains->cards structure — confirmed against a real completed Bucket B / TR1 submission,
+// 2026-08-13: feedback.domains[domainKey].cards[0][fieldKey] holds each rating, and
+// cards[0].domain_rating holds that part's average (NOT the sibling "..._average" field at the
+// domain level, which is always null in the sample seen). domainKey comes from the column's
+// group name (stripped of "Part N: "), fieldKey from the column's own label — both derived the
+// same way (lowercase, strip punctuation, join with "_"), matching how the Interview Coordinator
+// App itself names them (e.g. "Architectural Decisions & Trade-offs" -> "architectural_decisions
+// _trade_offs"). Exact for Bucket B / TR1; Bucket B / TR2 and Bucket C use the same mechanism by
+// inference (same app, same convention) but haven't been checked against real completed data —
+// verify once either bucket has a completed interview and correct here if the keys differ.
+function fillRubricColumns(row, iv, columns) {
+  const domains = iv.domains || {};
+  for (const col of columns) {
+    if (!col.group || row[col.key] !== undefined) continue;
+    const card = domains[groupNameToDomainKey(col.group.name)]?.cards?.[0] || {};
+    row[col.key] = /Avg$/.test(col.key) ? (card.domain_rating ?? "") : (card[labelToFieldKey(col.label)] ?? "");
+  }
+  return row;
 }
 
 const ACADEMY_ROW_BUILDERS = {
+  // Bucket A currently has no live data from the Interview Coordinator App and an unconfirmed
+  // rubric naming convention (its groups don't follow the "Part N: ..." pattern used elsewhere) —
+  // left blank rather than guessed.
   "A:TR1": (iv) => ({
     ...academyCommonFields(iv),
     codingProblemAsked: "",
@@ -4346,17 +4365,26 @@ const ACADEMY_ROW_BUILDERS = {
     totalScore: iv.finalVerdict ?? "",
     finalStatus: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }),
-  "B:TR1": (iv) => ({
+  "B:TR1": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
-    solutionOwnershipDepth: "", architecturalDecisionsTradeoffs: "", edgeCasesLimitationsAwareness: "", part1Avg: "",
-    javascript: "", react: "", htmlCssWeb: "", restApis: "", part2Avg: "",
-    problemBreakdownPlanning: "", reactHooksUsage: "", codeStructureClarity: "", part3Avg: "",
     finalScore: iv.finalVerdict ?? "",
     interviewIntegrityScore: "",
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
-  }),
-  "B:TR2": academyBucketCShapeRow,
-  "C:": academyBucketCShapeRow,
+  }, iv, BUCKET_B_TR1_COLUMNS),
+  "B:TR2": (iv) => fillRubricColumns({
+    ...academyCommonFields(iv),
+    overallRemarks: iv.remarks || "",
+    finalScore: iv.finalVerdict ?? "",
+    interviewIntegrityScore: "",
+    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+  }, iv, BUCKET_B_TR2_COLUMNS),
+  "C:": (iv) => fillRubricColumns({
+    ...academyCommonFields(iv),
+    overallRemarks: iv.remarks || "",
+    finalScore: iv.finalVerdict ?? "",
+    interviewIntegrityScore: "",
+    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+  }, iv, BUCKET_C_COLUMNS),
 };
 
 function InterviewsPage() {
