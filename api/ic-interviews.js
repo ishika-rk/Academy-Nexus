@@ -101,12 +101,7 @@ export default async function handler(req, res) {
     }
     await batch.commit();
 
-    // TEMP debug (2026-08-13): integrityScore isn't showing up in Firestore after sync despite
-    // the mapping looking correct — reporting a sample directly in the response to check whether
-    // the computed value is right before the write, bypassing any doubt about the batch write or
-    // the client-side listener. Remove `sample` once resolved.
-    const sample = interviews.slice(0, 5).map(iv => ({ candidateName: iv.candidateName, integrityScore: iv.integrityScore, hasIntegrityScoreKey: "integrityScore" in iv }));
-    return res.status(200).json({ ok: true, count: interviews.length, syncedAt, sample });
+    return res.status(200).json({ ok: true, count: interviews.length, syncedAt });
   } catch (err) {
     console.error("ic-interviews error:", err);
     return res.status(500).json({ ok: false, error: "Failed to sync interviews" });

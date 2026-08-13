@@ -4226,12 +4226,17 @@ function InterviewDataTable({ columns, rows, source }) {
                 {columns.map(col => {
                   const value = row[col.key];
                   const hasValue = value !== undefined && value !== null && value !== "";
+                  // Interview Integrity Score shows just the number in the cell, but the
+                  // underlying proctoring/compliance checks (what was actually flagged) are more
+                  // useful than the bare score — clicking pops those up instead.
+                  const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
+                  const clickable = hasValue || !!details;
                   return (
                     <td
                       key={col.key}
-                      style={{ ...tdBase, cursor: hasValue ? "pointer" : "default" }}
-                      title={hasValue ? "Click to view full entry" : undefined}
-                      onClick={hasValue ? () => setExpanded({ label: col.label, value }) : undefined}
+                      style={{ ...tdBase, cursor: clickable ? "pointer" : "default" }}
+                      title={clickable ? "Click to view full entry" : undefined}
+                      onClick={clickable ? () => setExpanded(details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) } : { label: col.label, value }) : undefined}
                     >
                       {hasValue ? value : "—"}
                     </td>
@@ -4357,6 +4362,25 @@ function integrityScore(iv) {
   return iv.integrityScore ?? "";
 }
 
+function titleCaseKey(key) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Human-readable breakdown of the automated proctoring/compliance checks (domains.integrity) —
+// shown in a popup when clicking the Interview Integrity Score cell, since the score alone
+// doesn't say what was actually flagged. Field labels are title-cased from their raw keys rather
+// than matched word-for-word to the Interview Coordinator App's own phrasing (unconfirmed) — the
+// values themselves are exact.
+function formatIntegrityDetails(integrity) {
+  if (!integrity) return "No integrity details available.";
+  const skip = new Set(["cards", "domain_rating", "integrity_remarks"]);
+  const lines = Object.entries(integrity)
+    .filter(([k]) => !skip.has(k))
+    .map(([k, v]) => `${titleCaseKey(k)}: ${v}`);
+  if (integrity.integrity_remarks) lines.push(`Remarks: ${integrity.integrity_remarks}`);
+  return lines.join("\n") || "No integrity details available.";
+}
+
 function fillRubricColumns(row, iv, columns) {
   const domains = iv.domains || {};
   for (const col of columns) {
@@ -4393,6 +4417,7 @@ const ACADEMY_ROW_BUILDERS = {
     ...academyCommonFields(iv),
     finalScore: iv.finalVerdict ?? "",
     interviewIntegrityScore: integrityScore(iv),
+    _integrityDetails: iv.domains?.integrity || null,
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }, iv, BUCKET_B_TR1_COLUMNS),
   "B:TR2": (iv) => fillRubricColumns({
@@ -4400,6 +4425,7 @@ const ACADEMY_ROW_BUILDERS = {
     overallRemarks: iv.remarks || "",
     finalScore: iv.finalVerdict ?? "",
     interviewIntegrityScore: integrityScore(iv),
+    _integrityDetails: iv.domains?.integrity || null,
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }, iv, BUCKET_B_TR2_COLUMNS),
   "C:": (iv) => fillRubricColumns({
@@ -4407,6 +4433,7 @@ const ACADEMY_ROW_BUILDERS = {
     overallRemarks: iv.remarks || "",
     finalScore: iv.finalVerdict ?? "",
     interviewIntegrityScore: integrityScore(iv),
+    _integrityDetails: iv.domains?.integrity || null,
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }, iv, BUCKET_C_COLUMNS),
 };
@@ -4442,7 +4469,6 @@ function InterviewsPage() {
         headers: { Authorization: `Bearer ${idToken}` },
       });
       const data = await res.json();
-      console.log("[debug sync response]", data);
       if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
       setLastSyncedAt(data.syncedAt || new Date().toISOString());
     } catch (err) {
