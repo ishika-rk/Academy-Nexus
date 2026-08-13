@@ -107,20 +107,7 @@ export default async function handler(req, res) {
     }
     await batch.commit();
 
-    // TEMP debug (2026-08-13): the recording link is viewable in the Interview Coordinator App's
-    // own UI but isn't anywhere in the `interviews` doc itself (exhaustively searched already) —
-    // it likely lives in a different top-level collection, or a subcollection under each
-    // interview doc. Listing both to find it. Remove `debugCollections`/`debugSubcollections`
-    // once found.
-    const topLevelCollections = await db.listCollections();
-    const debugCollections = topLevelCollections.map((c) => c.id);
-    let debugSubcollections = [];
-    if (snap.docs[0]) {
-      const subcols = await snap.docs[0].ref.listCollections();
-      debugSubcollections = subcols.map((c) => c.id);
-    }
-
-    return res.status(200).json({ ok: true, count: interviews.length, syncedAt, debugCollections, debugSubcollections });
+    return res.status(200).json({ ok: true, count: interviews.length, syncedAt });
   } catch (err) {
     console.error("ic-interviews error:", err);
     return res.status(500).json({ ok: false, error: "Failed to sync interviews" });
