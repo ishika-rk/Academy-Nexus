@@ -91,6 +91,11 @@ export default async function handler(req, res) {
         // proctoring compliance checks, unrelated despite the similar name). Confirmed via a live
         // debug search of the raw feedback payload, 2026-08-13.
         integrityScore: feedback.integrityScore ?? null,
+        // TEMP debug (2026-08-13): looking for the interview recording link, not yet found in
+        // the fields already captured — capturing the full raw doc + feedback object to search
+        // for it. Remove _rawDoc/_rawFeedback once found.
+        _rawDoc: r,
+        _rawFeedback: feedback,
       };
     });
 

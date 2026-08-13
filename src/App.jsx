@@ -4480,7 +4480,26 @@ function InterviewsPage() {
   useEffect(() => {
     const unsub = onSnapshot(
       query(collection(db, "interviews"), orderBy("updatedAt", "desc")),
-      (snap) => { setAcademyInterviews(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setListenerError(null); },
+      (snap) => {
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const match = docs.find(d => d.status === "completed" && d._rawFeedback);
+        if (match) {
+          console.log("[debug recording link] candidate:", match.candidateName);
+          const hits = [];
+          const walk = (obj, path) => {
+            if (obj === null || typeof obj !== "object") return;
+            for (const [k, v] of Object.entries(obj)) {
+              const p = path ? `${path}.${k}` : k;
+              if (typeof v === "string" && /^https?:\/\//i.test(v)) hits.push(`${p} = ${v}`);
+              else if (/record/i.test(k)) hits.push(`${p} (key match) = ${JSON.stringify(v)}`);
+              else if (typeof v === "object") walk(v, p);
+            }
+          };
+          walk(match, "");
+          console.log("[debug recording link] URL/record-key hits:", hits);
+        }
+        setAcademyInterviews(docs); setListenerError(null);
+      },
       (err) => { console.error("interviews listener error:", err); setListenerError(err.message || "Failed to load interviews"); }
     );
     return unsub;
