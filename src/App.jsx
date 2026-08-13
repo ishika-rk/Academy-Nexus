@@ -4287,19 +4287,54 @@ function InterviewDataTable({ columns, rows, source }) {
 //    straight from the Interview Coordinator App's own Firestore (same
 //    cross-project-read pattern the IOE Admin Portal uses) and backfills
 //    anything not yet pushed.
-// Per-problem rubric fields (Problem 1/2 ratings, DSA/Core CS Theory,
-// recording link) aren't populated yet — that needs a confirmed mapping from
-// the Interview Coordinator App's feedback.domains shape to these specific
-// columns, still TBD.
-function academyInterviewToTR1Row(iv) {
+// Per-problem/part rubric columns (Problem 1/2 ratings, DSA/Core CS Theory, JS/React/HTML
+// breakdowns, etc.) aren't populated yet for any slot — that needs a confirmed mapping from
+// the Interview Coordinator App's feedback.domains shape to these specific columns, still TBD.
+// Only fields common to every round (candidate/schedule/panelist info, overall score, remarks,
+// final status) are filled in from the synced data.
+
+// templateName follows "Academy Bucket {A|B|C} TR{1|2}" (Bucket C's is bare "Academy Bucket C
+// TR", no digit, since it has no TR1/TR2 split) — confirmed against real synced docs 2026-08-12.
+// Previously every synced interview was hardcoded into the Bucket A / TR1 slot regardless of
+// which bucket/round it actually belonged to, so Bucket B and C data (the only buckets the
+// Interview Coordinator App had at the time) landed in a table with the wrong column schema.
+function parseAcademySlot(templateName) {
+  const m = /^Academy Bucket ([ABC])(?:\s+TR(\d)?)?\s*$/i.exec((templateName || "").trim());
+  if (!m) return null;
+  const bucket = m[1].toUpperCase();
+  const subTab = bucket === "C" ? "" : (m[2] ? `TR${m[2]}` : "");
+  return `${bucket}:${subTab}`;
+}
+
+function academyCommonFields(iv) {
   return {
     candidateId: iv.id,
-    candidateName: iv.candidateName || "",
+    candidateName: (iv.candidateName || "").trim(),
     candidateResume: "",
     interviewDate: iv.scheduledDate || "",
     interviewStartTime: iv.scheduledTime || "",
     panelistName: iv.interviewerEmail || "",
     recordingLink: "",
+  };
+}
+
+// Bucket B/TR2 and Bucket C share an identical column schema (see BUCKET_B_TR2_COLUMNS /
+// BUCKET_C_COLUMNS above), so they share one row builder.
+function academyBucketCShapeRow(iv) {
+  return {
+    ...academyCommonFields(iv),
+    depthAuthenticity: "", technicalDecisionsTradeoffs: "", failuresLimitationsReasoning: "", part1Avg: "",
+    approachReasoning: "", edgeCasesCorrectness: "", complexityAwareness: "", part2Avg: "",
+    overallRemarks: iv.remarks || "",
+    finalScore: iv.finalVerdict ?? "",
+    interviewIntegrityScore: "",
+    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+  };
+}
+
+const ACADEMY_ROW_BUILDERS = {
+  "A:TR1": (iv) => ({
+    ...academyCommonFields(iv),
     codingProblemAsked: "",
     p1ProblemSolvingRating: "", p1ProblemSolvingRemarks: "",
     p1CodeImplementationRating: "", p1CodeImplementationRemarks: "",
@@ -4310,8 +4345,19 @@ function academyInterviewToTR1Row(iv) {
     overallComments: iv.remarks || "",
     totalScore: iv.finalVerdict ?? "",
     finalStatus: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
-  };
-}
+  }),
+  "B:TR1": (iv) => ({
+    ...academyCommonFields(iv),
+    solutionOwnershipDepth: "", architecturalDecisionsTradeoffs: "", edgeCasesLimitationsAwareness: "", part1Avg: "",
+    javascript: "", react: "", htmlCssWeb: "", restApis: "", part2Avg: "",
+    problemBreakdownPlanning: "", reactHooksUsage: "", codeStructureClarity: "", part3Avg: "",
+    finalScore: iv.finalVerdict ?? "",
+    interviewIntegrityScore: "",
+    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+  }),
+  "B:TR2": academyBucketCShapeRow,
+  "C:": academyBucketCShapeRow,
+};
 
 function InterviewsPage() {
   const [bucketTab, setBucketTab] = useState("A");
@@ -4358,8 +4404,11 @@ function InterviewsPage() {
     setSubTab(INTERVIEW_BUCKETS.find(b => b.id === id).subheaders[0] || "");
   };
 
-  const isAcademySlot = bucketTab === "A" && subTab === "TR1";
-  const activeRows = isAcademySlot ? academyInterviews.map(academyInterviewToTR1Row) : (activeTable?.rows || []);
+  const slotKey = `${bucketTab}:${subTab}`;
+  const academyRowBuilder = ACADEMY_ROW_BUILDERS[slotKey];
+  const activeRows = academyRowBuilder
+    ? academyInterviews.filter(iv => parseAcademySlot(iv.templateName) === slotKey).map(academyRowBuilder)
+    : (activeTable?.rows || []);
   const syncBannerError = listenerError || syncError;
 
   return (

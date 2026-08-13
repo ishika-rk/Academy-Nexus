@@ -80,6 +80,10 @@ export default async function handler(req, res) {
         feedbackSubmittedAt: feedback.submittedAt || "",
         completedAt: feedback.submittedAt || r.updatedAt || "",
         updatedAt: r.updatedAt || "",
+        // TEMP debug (2026-08-13): capturing the full raw feedback object so we can see its
+        // actual shape (per-part rubric scores, integrity score, recording link) and build a
+        // real mapping — remove this field + the App.jsx debug log once that mapping is added.
+        _rawFeedback: feedback,
       };
     });
 
