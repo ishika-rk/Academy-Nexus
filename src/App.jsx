@@ -4328,26 +4328,45 @@ function groupNameToDomainKey(groupName) {
 }
 
 // Fills every rubric column (any column with a `group`) on a row from the Interview Coordinator
-// App's domains->cards structure — confirmed against a real completed Bucket B / TR1 submission,
-// 2026-08-13: feedback.domains[domainKey].cards[0][fieldKey] holds each rating, and
-// cards[0].domain_rating holds that part's average (NOT the sibling "..._average" field at the
-// domain level, which is always null in the sample seen). domainKey comes from the column's
-// group name (stripped of "Part N: "), fieldKey from the column's own label — both derived the
-// same way (lowercase, strip punctuation, join with "_"), matching how the Interview Coordinator
-// App itself names them (e.g. "Architectural Decisions & Trade-offs" -> "architectural_decisions
-// _trade_offs"). Exact for Bucket B / TR1; Bucket B / TR2 and Bucket C use the same mechanism by
-// inference (same app, same convention) but haven't been checked against real completed data —
-// verify once either bucket has a completed interview and correct here if the keys differ.
+// App's domains->cards structure. domainKey is derived from the column's group name (stripped of
+// "Part N: ", lowercase, strip punctuation, join with "_") — confirmed exact for every bucket/
+// round checked so far (Bucket B / TR1 and TR2). domain.domain_rating (a sibling of `cards`, NOT
+// inside cards[0]) holds that part's average.
+//
+// The individual rating field key is NOT reliably derivable from the column label — confirmed by
+// comparing real synced data against label-derivation for Bucket B / TR2, 2026-08-13: some fields
+// match (e.g. "Approach & Reasoning" -> approach_reasoning) but several are abbreviated
+// differently (e.g. "Technical Decisions & Trade-offs" -> technical_decisions, not
+// technical_decisions_trade_offs; "Edge Cases & Correctness" -> edge_cases; "Failures /
+// Limitations Reasoning" -> failures_reasoning). RUBRIC_FIELD_KEY_OVERRIDES below holds the
+// confirmed exceptions; label-derivation is only a fallback for fields not yet checked against
+// real data. Bucket C shares the exact same column labels/shape as Bucket B / TR2 so the same
+// overrides are applied there too, but that's inferred from the shared shape, not independently
+// confirmed — verify once Bucket C has a completed interview.
+const RUBRIC_FIELD_KEY_OVERRIDES = {
+  technicalDecisionsTradeoffs: "technical_decisions",
+  failuresLimitationsReasoning: "failures_reasoning",
+  edgeCasesCorrectness: "edge_cases",
+};
+
+// Interview Integrity Score comes from a separate "integrity" domain (proctoring/compliance
+// checks — av_quality, camera_compliance, screen_sharing, etc.), not one of the rubric part
+// domains — confirmed via a live debug dump of Bucket B / TR2 data, 2026-08-13.
+function integrityScore(iv) {
+  return iv.domains?.integrity?.domain_rating ?? "";
+}
+
 function fillRubricColumns(row, iv, columns) {
   const domains = iv.domains || {};
   for (const col of columns) {
     if (!col.group || row[col.key] !== undefined) continue;
     const domain = domains[groupNameToDomainKey(col.group.name)] || {};
-    // domain_rating (the part average) lives on the domain object itself, as a sibling of
-    // `cards` — NOT inside cards[0] like the individual per-rating fields. Confirmed via a live
-    // debug dump 2026-08-13 (individual ratings were populating correctly; Avg columns weren't,
-    // because this originally read card.domain_rating instead of domain.domain_rating).
-    row[col.key] = /Avg$/.test(col.key) ? (domain.domain_rating ?? "") : (domain.cards?.[0]?.[labelToFieldKey(col.label)] ?? "");
+    if (/Avg$/.test(col.key)) {
+      row[col.key] = domain.domain_rating ?? "";
+    } else {
+      const fieldKey = RUBRIC_FIELD_KEY_OVERRIDES[col.key] || labelToFieldKey(col.label);
+      row[col.key] = domain.cards?.[0]?.[fieldKey] ?? "";
+    }
   }
   return row;
 }
@@ -4372,21 +4391,21 @@ const ACADEMY_ROW_BUILDERS = {
   "B:TR1": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     finalScore: iv.finalVerdict ?? "",
-    interviewIntegrityScore: "",
+    interviewIntegrityScore: integrityScore(iv),
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }, iv, BUCKET_B_TR1_COLUMNS),
   "B:TR2": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
     finalScore: iv.finalVerdict ?? "",
-    interviewIntegrityScore: "",
+    interviewIntegrityScore: integrityScore(iv),
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }, iv, BUCKET_B_TR2_COLUMNS),
   "C:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
     finalScore: iv.finalVerdict ?? "",
-    interviewIntegrityScore: "",
+    interviewIntegrityScore: integrityScore(iv),
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }, iv, BUCKET_C_COLUMNS),
 };
