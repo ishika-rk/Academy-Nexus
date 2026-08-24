@@ -4489,22 +4489,6 @@ function InterviewsPage() {
       query(collection(db, "interviews"), orderBy("updatedAt", "desc")),
       (snap) => {
         const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        const match = docs.find(d => d.status === "completed" && d._rawFeedback && (d.templateName || "").includes("Bucket C"))
-          || docs.find(d => d.status === "completed" && d._rawFeedback);
-        if (match) {
-          console.log("[debug descriptor search] candidate:", match.candidateName, "templateName:", match.templateName);
-          const hits = [];
-          const walk = (obj, path) => {
-            if (obj === null || typeof obj !== "object") return;
-            for (const [k, v] of Object.entries(obj)) {
-              const p = path ? `${path}.${k}` : k;
-              if (typeof v === "string" && (/card\s*1/i.test(v) || /domain rating\s*:/i.test(v) || v.includes(" | "))) hits.push(`${p} = ${v}`);
-              else if (typeof v === "object") walk(v, p);
-            }
-          };
-          walk(match, "");
-          console.log("[debug descriptor search] hits:", hits);
-        }
         setAcademyInterviews(docs); setListenerError(null);
       },
       (err) => { console.error("interviews listener error:", err); setListenerError(err.message || "Failed to load interviews"); }
