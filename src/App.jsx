@@ -4090,9 +4090,9 @@ const BUCKET_B_TR1_COLUMNS = [
   { key: "reactHooksUsage", label: "React & Hooks Usage", group: BUCKET_B_TR1_GROUPS.part3 },
   { key: "codeStructureClarity", label: "Code Structure & Clarity", group: BUCKET_B_TR1_GROUPS.part3 },
   { key: "part3Avg", label: "Part 3 Avg", group: BUCKET_B_TR1_GROUPS.part3 },
-  { key: "finalScore", label: "Final Score" },
+  { key: "finalScore", label: "Final Score ( out of 15 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "status", label: "Status" },
+  { key: "status", label: "Clearance Status" },
 ];
 
 const BUCKET_B_TR2_GROUPS = {
@@ -4391,6 +4391,17 @@ function bucketCClearanceStatus(iv) {
   return Number.isFinite(score) && score >= 7 ? "Cleared" : "Not Cleared";
 }
 
+// Bucket B / TR1's clearance status: same relabeling + completed-without-outcome fallback as
+// Bucket C, but finalVerdict here is already scored out of 15, so the cutoff is 70% of 15.
+function bucketBTR1ClearanceStatus(iv) {
+  if (iv.status !== "completed") return iv.status || "";
+  const outcome = (iv.outcome || "").trim();
+  if (outcome === "Shortlisted") return "Cleared";
+  if (outcome === "Rejected") return "Not Cleared";
+  const score = Number(iv.finalVerdict);
+  return Number.isFinite(score) && score >= 10.5 ? "Cleared" : "Not Cleared";
+}
+
 function titleCaseKey(key) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -4474,7 +4485,7 @@ const ACADEMY_ROW_BUILDERS = {
     finalScore: iv.finalVerdict ?? "",
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
-    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+    status: bucketBTR1ClearanceStatus(iv),
   }, iv, BUCKET_B_TR1_COLUMNS),
   "B:TR2": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
