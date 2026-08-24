@@ -4323,13 +4323,10 @@ function academyCommonFields(iv) {
     interviewDate: iv.scheduledDate || "",
     interviewStartTime: iv.scheduledTime || "",
     panelistName: iv.interviewerEmail || "",
-    // meetLink (the only URL in the synced payload, confirmed via an exhaustive raw-data search
-    // 2026-08-13) is the live Google Meet join link, NOT a recording — confirmed with the user.
-    // No separate recording link exists anywhere in this doc; left blank rather than mislabeled.
-    recordingLink: "",
-    // Same situation as recordingLink — the Interview Coordinator App's UI has a "Transcript"
-    // action, but no transcript link/field has been found anywhere in the synced payload yet.
-    transcriptLink: "",
+    // meetingRecordingUrl/transcriptUrl were added by the Interview Coordinator App team
+    // 2026-08-14, per our request (meetLink, the join link, was wrongly used here before).
+    recordingLink: iv.meetingRecordingUrl || "",
+    transcriptLink: iv.transcriptUrl || "",
   };
 }
 
@@ -4490,26 +4487,7 @@ function InterviewsPage() {
   useEffect(() => {
     const unsub = onSnapshot(
       query(collection(db, "interviews"), orderBy("updatedAt", "desc")),
-      (snap) => {
-        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        const match = docs.find(d => d.status === "completed" && d._rawFeedback);
-        if (match) {
-          console.log("[debug link search] candidate:", match.candidateName);
-          const hits = [];
-          const walk = (obj, path) => {
-            if (obj === null || typeof obj !== "object") return;
-            for (const [k, v] of Object.entries(obj)) {
-              const p = path ? `${path}.${k}` : k;
-              if (typeof v === "string" && /^https?:\/\//i.test(v)) hits.push(`${p} = ${v}`);
-              else if (/record|transcript/i.test(k)) hits.push(`${p} (key match) = ${JSON.stringify(v)}`);
-              else if (typeof v === "object") walk(v, p);
-            }
-          };
-          walk(match, "");
-          console.log("[debug link search] hits:", hits);
-        }
-        setAcademyInterviews(docs); setListenerError(null);
-      },
+      (snap) => { setAcademyInterviews(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setListenerError(null); },
       (err) => { console.error("interviews listener error:", err); setListenerError(err.message || "Failed to load interviews"); }
     );
     return unsub;
