@@ -4378,6 +4378,13 @@ function scaleOutOfFiveToTen(raw) {
   return Number.isFinite(n) ? n * 2 : (raw ?? "");
 }
 
+// Bucket B / TR1's finalVerdict also comes from the Interview App scored out of 5 —
+// displayed here scaled to out of 15 to match this round's scoring convention.
+function scaleOutOfFiveToFifteen(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n * 3 : (raw ?? "");
+}
+
 // Bucket C's clearance status: an outcome already set by the Interview App (Shortlisted/
 // Rejected) is relabeled to match our Cleared/Not Cleared wording; anything else that's
 // come back completed without an outcome is decided by our own 70%-of-10 cutoff on the
@@ -4392,13 +4399,13 @@ function bucketCClearanceStatus(iv) {
 }
 
 // Bucket B / TR1's clearance status: same relabeling + completed-without-outcome fallback as
-// Bucket C, but finalVerdict here is already scored out of 15, so the cutoff is 70% of 15.
+// Bucket C, evaluated against the out-of-15 final score, cutoff at 70% of 15.
 function bucketBTR1ClearanceStatus(iv) {
   if (iv.status !== "completed") return iv.status || "";
   const outcome = (iv.outcome || "").trim();
   if (outcome === "Shortlisted") return "Cleared";
   if (outcome === "Rejected") return "Not Cleared";
-  const score = Number(iv.finalVerdict);
+  const score = scaleOutOfFiveToFifteen(iv.finalVerdict);
   return Number.isFinite(score) && score >= 10.5 ? "Cleared" : "Not Cleared";
 }
 
@@ -4482,7 +4489,7 @@ const ACADEMY_ROW_BUILDERS = {
   }),
   "B:TR1": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
-    finalScore: iv.finalVerdict ?? "",
+    finalScore: scaleOutOfFiveToFifteen(iv.finalVerdict),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
     status: bucketBTR1ClearanceStatus(iv),
