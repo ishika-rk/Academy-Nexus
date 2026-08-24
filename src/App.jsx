@@ -4367,22 +4367,31 @@ const RUBRIC_FIELD_KEY_OVERRIDES = {
 // separate 0-1 average of automated proctoring compliance checks; despite the similar name it's
 // unrelated and can never reach a value like "5"). Confirmed via a live debug search of the raw
 // feedback payload, 2026-08-13.
+// Every decimal value shown on the Interviews tables (scores, averages, ratings) displays
+// at most 2 digits after the point — raw values from the Interview App can carry far more
+// precision than that. Non-numeric values (blank, remarks text) pass through unchanged.
+function round2(raw) {
+  if (raw === "" || raw === null || raw === undefined) return raw ?? "";
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : raw;
+}
+
 function integrityScore(iv) {
-  return iv.integrityScore ?? "";
+  return round2(iv.integrityScore ?? "");
 }
 
 // Bucket C's finalVerdict comes from the Interview App scored out of 5 — displayed here
 // scaled to out of 10 to match the other buckets' scoring convention.
 function scaleOutOfFiveToTen(raw) {
   const n = Number(raw);
-  return Number.isFinite(n) ? n * 2 : (raw ?? "");
+  return Number.isFinite(n) ? round2(n * 2) : (raw ?? "");
 }
 
 // Bucket B / TR1's finalVerdict also comes from the Interview App scored out of 5 —
 // displayed here scaled to out of 15 to match this round's scoring convention.
 function scaleOutOfFiveToFifteen(raw) {
   const n = Number(raw);
-  return Number.isFinite(n) ? n * 3 : (raw ?? "");
+  return Number.isFinite(n) ? round2(n * 3) : (raw ?? "");
 }
 
 // Bucket C's clearance status: an outcome already set by the Interview App (Shortlisted/
@@ -4461,10 +4470,10 @@ function fillRubricColumns(row, iv, columns) {
     if (!col.group || row[col.key] !== undefined) continue;
     const domain = domains[groupNameToDomainKey(col.group.name)] || {};
     if (/Avg$/.test(col.key)) {
-      row[col.key] = domain.domain_rating ?? "";
+      row[col.key] = round2(domain.domain_rating ?? "");
     } else {
       const fieldKey = RUBRIC_FIELD_KEY_OVERRIDES[col.key] || labelToFieldKey(col.label);
-      row[col.key] = domain.cards?.[0]?.[fieldKey] ?? "";
+      row[col.key] = round2(domain.cards?.[0]?.[fieldKey] ?? "");
     }
   }
   return row;
@@ -4484,7 +4493,7 @@ const ACADEMY_ROW_BUILDERS = {
     dsaTheoryQ1: "", dsaTheoryQ1Remarks: "",
     coreCsTheoryQ1: "", coreCsTheoryQ1Remarks: "",
     overallComments: iv.remarks || "",
-    totalScore: iv.finalVerdict ?? "",
+    totalScore: round2(iv.finalVerdict ?? ""),
     finalStatus: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
   }),
   "B:TR1": (iv) => fillRubricColumns({
@@ -4497,7 +4506,7 @@ const ACADEMY_ROW_BUILDERS = {
   "B:TR2": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
-    finalScore: iv.finalVerdict ?? "",
+    finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
