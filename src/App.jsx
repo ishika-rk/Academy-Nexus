@@ -4039,6 +4039,7 @@ const TR1_COLUMNS = [
   { key: "interviewStartTime", label: "Interview Start time" },
   { key: "panelistName", label: "Name of the Panelist" },
   { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
   { key: "codingProblemAsked", label: "Coding Problem asked" },
   { key: "p1ProblemSolvingRating", label: "Problem 1 - Problem Solving (Rating out of 5)", group: TR1_GROUPS.problem1 },
   { key: "p1ProblemSolvingRemarks", label: "Problem 1 - Remarks on Problem Solving", group: TR1_GROUPS.problem1 },
@@ -4073,6 +4074,7 @@ const BUCKET_B_TR1_COLUMNS = [
   { key: "interviewStartTime", label: "Interview Start time" },
   { key: "panelistName", label: "Name of the Panelist" },
   { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
   { key: "solutionOwnershipDepth", label: "Solution Ownership & Depth", group: BUCKET_B_TR1_GROUPS.part1 },
   { key: "architecturalDecisionsTradeoffs", label: "Architectural Decisions & Trade-offs", group: BUCKET_B_TR1_GROUPS.part1 },
   { key: "edgeCasesLimitationsAwareness", label: "Edge Cases & Limitations Awareness", group: BUCKET_B_TR1_GROUPS.part1 },
@@ -4104,6 +4106,7 @@ const BUCKET_B_TR2_COLUMNS = [
   { key: "interviewStartTime", label: "Interview Start time" },
   { key: "panelistName", label: "Name of the Panelist" },
   { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
   { key: "depthAuthenticity", label: "Depth & Authenticity", group: BUCKET_B_TR2_GROUPS.part1 },
   { key: "technicalDecisionsTradeoffs", label: "Technical Decisions & Trade-offs", group: BUCKET_B_TR2_GROUPS.part1 },
   { key: "failuresLimitationsReasoning", label: "Failures / Limitations Reasoning", group: BUCKET_B_TR2_GROUPS.part1 },
@@ -4131,6 +4134,7 @@ const BUCKET_C_COLUMNS = [
   { key: "interviewStartTime", label: "Interview Start time" },
   { key: "panelistName", label: "Name of the Panelist" },
   { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
   { key: "depthAuthenticity", label: "Depth & Authenticity", group: BUCKET_C_GROUPS.part1 },
   { key: "technicalDecisionsTradeoffs", label: "Technical Decisions & Trade-offs", group: BUCKET_C_GROUPS.part1 },
   { key: "failuresLimitationsReasoning", label: "Failures / Limitations Reasoning", group: BUCKET_C_GROUPS.part1 },
@@ -4323,6 +4327,9 @@ function academyCommonFields(iv) {
     // 2026-08-13) is the live Google Meet join link, NOT a recording — confirmed with the user.
     // No separate recording link exists anywhere in this doc; left blank rather than mislabeled.
     recordingLink: "",
+    // Same situation as recordingLink — the Interview Coordinator App's UI has a "Transcript"
+    // action, but no transcript link/field has been found anywhere in the synced payload yet.
+    transcriptLink: "",
   };
 }
 
