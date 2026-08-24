@@ -4371,6 +4371,13 @@ function integrityScore(iv) {
   return iv.integrityScore ?? "";
 }
 
+// Bucket C's finalVerdict comes from the Interview App scored out of 5 — displayed here
+// scaled to out of 10 to match the other buckets' scoring convention.
+function scaleOutOfFiveToTen(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n * 2 : (raw ?? "");
+}
+
 function titleCaseKey(key) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -4467,7 +4474,7 @@ const ACADEMY_ROW_BUILDERS = {
   "C:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
-    finalScore: iv.finalVerdict ?? "",
+    finalScore: scaleOutOfFiveToTen(iv.finalVerdict),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
     status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
