@@ -4146,9 +4146,9 @@ const BUCKET_C_COLUMNS = [
   { key: "complexityAwareness", label: "Complexity Awareness", group: BUCKET_C_GROUPS.part2 },
   { key: "part2Avg", label: "Part 2 Avg", group: BUCKET_C_GROUPS.part2 },
   { key: "overallRemarks", label: "Overall Remarks" },
-  { key: "finalScore", label: "Final Score" },
+  { key: "finalScore", label: "Final Score ( out of 10 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "status", label: "Status" },
+  { key: "status", label: "Clearance Status" },
 ];
 
 const INTERVIEW_TABLE_COLUMNS = {
@@ -4378,6 +4378,19 @@ function scaleOutOfFiveToTen(raw) {
   return Number.isFinite(n) ? n * 2 : (raw ?? "");
 }
 
+// Bucket C's clearance status: an outcome already set by the Interview App (Shortlisted/
+// Rejected) is relabeled to match our Cleared/Not Cleared wording; anything else that's
+// come back completed without an outcome is decided by our own 70%-of-10 cutoff on the
+// (already out-of-10) final score. Non-completed interviews pass their raw status through.
+function bucketCClearanceStatus(iv) {
+  if (iv.status !== "completed") return iv.status || "";
+  const outcome = (iv.outcome || "").trim();
+  if (outcome === "Shortlisted") return "Cleared";
+  if (outcome === "Rejected") return "Not Cleared";
+  const score = scaleOutOfFiveToTen(iv.finalVerdict);
+  return Number.isFinite(score) && score >= 7 ? "Cleared" : "Not Cleared";
+}
+
 function titleCaseKey(key) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -4477,7 +4490,7 @@ const ACADEMY_ROW_BUILDERS = {
     finalScore: scaleOutOfFiveToTen(iv.finalVerdict),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
-    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+    status: bucketCClearanceStatus(iv),
   }, iv, BUCKET_C_COLUMNS),
 };
 
