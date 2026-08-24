@@ -97,6 +97,11 @@ export default async function handler(req, res) {
         // Interview Coordinator App may not distinguish a join link from a post-hoc recording
         // link, so this may be the live meeting link rather than a recording specifically.
         meetLink: r.meetLink || "",
+        // TEMP debug (2026-08-14): the Interview Coordinator App team says recording/transcript
+        // links have now been added — capturing the full raw doc + feedback object to find the
+        // new field(s). Remove _rawDoc/_rawFeedback once found.
+        _rawDoc: r,
+        _rawFeedback: feedback,
       };
     });
 
