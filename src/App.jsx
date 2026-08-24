@@ -4118,9 +4118,9 @@ const BUCKET_B_TR2_COLUMNS = [
   { key: "complexityAwareness", label: "Complexity Awareness", group: BUCKET_B_TR2_GROUPS.part2 },
   { key: "part2Avg", label: "Part 2 Avg", group: BUCKET_B_TR2_GROUPS.part2 },
   { key: "overallRemarks", label: "Overall Remarks" },
-  { key: "finalScore", label: "Final Score" },
+  { key: "finalScore", label: "Final Score ( out of 10 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "status", label: "Status" },
+  { key: "status", label: "Clearance Status" },
 ];
 
 const BUCKET_C_GROUPS = {
@@ -4418,6 +4418,17 @@ function bucketBTR1ClearanceStatus(iv) {
   return Number.isFinite(score) && score >= 10.5 ? "Cleared" : "Not Cleared";
 }
 
+// Bucket B / TR2's clearance status: same relabeling + completed-without-outcome fallback as
+// Bucket C, including the same out-of-5-to-out-of-10 scaling and 70%-of-10 cutoff.
+function bucketBTR2ClearanceStatus(iv) {
+  if (iv.status !== "completed") return iv.status || "";
+  const outcome = (iv.outcome || "").trim();
+  if (outcome === "Shortlisted") return "Cleared";
+  if (outcome === "Rejected") return "Not Cleared";
+  const score = scaleOutOfFiveToTen(iv.finalVerdict);
+  return Number.isFinite(score) && score >= 7 ? "Cleared" : "Not Cleared";
+}
+
 function titleCaseKey(key) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -4506,10 +4517,10 @@ const ACADEMY_ROW_BUILDERS = {
   "B:TR2": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
-    finalScore: round2(iv.finalVerdict ?? ""),
+    finalScore: scaleOutOfFiveToTen(iv.finalVerdict),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
-    status: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+    status: bucketBTR2ClearanceStatus(iv),
   }, iv, BUCKET_B_TR2_COLUMNS),
   "C:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
