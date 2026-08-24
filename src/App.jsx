@@ -4547,7 +4547,7 @@ function InterviewsPage() {
 
       <div style={{ display: "flex", gap: 2, marginBottom: activeBucket.subheaders.length ? 12 : 24, borderBottom: `2px solid ${C.border}` }}>
         {INTERVIEW_BUCKETS.map(b => (
-          <button key={b.id} onClick={() => selectBucket(b.id)} style={{ background: "none", border: "none", borderBottom: `2px solid ${bucketTab === b.id ? C.accent : "transparent"}`, marginBottom: -2, padding: "8px 20px", width: 110, flexShrink: 0, whiteSpace: "normal", wordBreak: "break-word", textAlign: "center", lineHeight: 1.3, fontSize: 13, fontWeight: 700, cursor: "pointer", color: bucketTab === b.id ? C.accent : C.muted, fontFamily: "inherit", transition: "all 0.15s" }}>{b.label}</button>
+          <button key={b.id} onClick={() => selectBucket(b.id)} style={{ background: "none", border: "none", borderBottom: `2px solid ${bucketTab === b.id ? C.accent : "transparent"}`, marginBottom: -2, padding: "8px 14px", width: 140, flexShrink: 0, whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", textAlign: "center", lineHeight: 1.3, fontSize: 13, fontWeight: 700, cursor: "pointer", color: bucketTab === b.id ? C.accent : C.muted, fontFamily: "inherit", transition: "all 0.15s" }}>{b.label}</button>
         ))}
       </div>
 
