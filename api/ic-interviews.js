@@ -101,6 +101,13 @@ export default async function handler(req, res) {
         // fields alongside meetLink, confirmed via a live debug search.
         meetingRecordingUrl: r.meetingRecordingUrl || "",
         transcriptUrl: r.transcriptUrl || "",
+        // TEMP debug (2026-08-14): the downloaded results export shows descriptor text per rating
+        // (e.g. "Depth & Authenticity: 4 - Clear stories, shows real ownership") that isn't in
+        // the plain-number `cards` fields we already read — capturing the full raw doc + feedback
+        // object to find where that formatted text actually lives. Remove _rawDoc/_rawFeedback
+        // once found.
+        _rawDoc: r,
+        _rawFeedback: feedback,
       };
     });
 
