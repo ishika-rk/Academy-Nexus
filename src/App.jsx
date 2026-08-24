@@ -4011,7 +4011,8 @@ const INTERVIEW_BUCKETS = [
   { id: "A", label: "Bucket A", subheaders: ["NxtMock", "TR1", "TR2"] },
   { id: "B", label: "Bucket B", subheaders: ["TR1", "TR2"] },
   { id: "C", label: "Bucket C", subheaders: [] },
-  { id: "D", label: "Frontend Development and Programming with Problem Solving (DSA)", subheaders: [] },
+  { id: "D", label: "Frontend Development", subheaders: [] },
+  { id: "E", label: "Programming with Problem Solving (DSA)", subheaders: [] },
 ];
 
 const NXTMOCK_COLUMNS = [
