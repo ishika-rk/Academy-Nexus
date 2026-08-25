@@ -4491,15 +4491,18 @@ function fillRubricColumns(row, iv, columns) {
     const domain = domains[groupNameToDomainKey(col.group.name)] || {};
     if (/Avg$/.test(col.key)) {
       row[col.key] = round2(domain.domain_rating ?? "");
-      // The Interview App sends a written descriptor alongside domain_rating, explaining the
-      // score — surfaced in a popup when clicking the cell (see InterviewDataTable).
-      if (domain.descriptor) {
-        row._domainDescriptors = row._domainDescriptors || {};
-        row._domainDescriptors[col.key] = domain.descriptor;
-      }
     } else {
       const fieldKey = RUBRIC_FIELD_KEY_OVERRIDES[col.key] || labelToFieldKey(col.label);
       row[col.key] = round2(domain.cards?.[0]?.[fieldKey] ?? "");
+      // Confirmed with the Interview App team, 2026-08-25: each domain carries a self-contained
+      // descriptors block mirroring its cards shape — domains.<id>.descriptors.cards[i].<fieldId>
+      // holds the written rationale for domains.<id>.cards[i].<fieldId>'s rating, same field key.
+      // Surfaced in a popup when clicking the cell (see InterviewDataTable).
+      const descriptor = domain.descriptors?.cards?.[0]?.[fieldKey];
+      if (descriptor) {
+        row._domainDescriptors = row._domainDescriptors || {};
+        row._domainDescriptors[col.key] = descriptor;
+      }
     }
   }
   return row;
