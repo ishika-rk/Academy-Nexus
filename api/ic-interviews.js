@@ -69,6 +69,9 @@ export default async function handler(req, res) {
         candidateName: r.candidateName || "",
         candidateEmail: r.candidateEmail || "",
         interviewerEmail: r.interviewerEmail || "",
+        // Added by the Interview Coordinator App team per our request — the interviewer's
+        // display name, replacing email as what's shown in the Name of the Panelist column.
+        interviewerName: r.interviewerName || "",
         templateName: r.templateName || "",
         round: r.round || "",
         scheduledDate: r.scheduledDate || "",

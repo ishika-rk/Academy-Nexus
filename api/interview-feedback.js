@@ -15,7 +15,7 @@ import { requireApiKey } from "./_lib/auth.js";
 // {
 //   "interviewId": "Interview Coordinator App's interview doc id",
 //   "candidateName": "string", "candidateEmail": "string",
-//   "interviewerEmail": "string",
+//   "interviewerEmail": "string", "interviewerName": "string",
 //   "templateName": "string", "round": "string",
 //   "status": "pending_acceptance" | "scheduled" | "completed" | "no_show" | "cancelled",
 //   "outcome": "string (feedback.overallRecommendation)",
@@ -42,7 +42,7 @@ export default async function handler(req, res) {
   }
 
   const {
-    interviewId, candidateName, candidateEmail, interviewerEmail,
+    interviewId, candidateName, candidateEmail, interviewerEmail, interviewerName,
     templateName, round, status, outcome, finalVerdict, remarks,
     scheduledDate, scheduledTime, completedAt, updatedAt,
   } = req.body || {};
@@ -61,6 +61,7 @@ export default async function handler(req, res) {
           candidateName: candidateName || "",
           candidateEmail: candidateEmail || "",
           interviewerEmail: interviewerEmail || "",
+          interviewerName: interviewerName || "",
           templateName: templateName || "",
           round: round || "",
           status,

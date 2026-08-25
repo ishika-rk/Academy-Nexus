@@ -4324,7 +4324,9 @@ function academyCommonFields(iv) {
     candidateResume: "",
     interviewDate: iv.scheduledDate || "",
     interviewStartTime: iv.scheduledTime || "",
-    panelistName: iv.interviewerEmail || "",
+    // interviewerName was added by the Interview Coordinator App team, replacing email as
+    // what's shown here — interviewerEmail is kept as a fallback for docs synced before that.
+    panelistName: iv.interviewerName || iv.interviewerEmail || "",
     // meetingRecordingUrl/transcriptUrl were added by the Interview Coordinator App team
     // 2026-08-14, per our request (meetLink, the join link, was wrongly used here before).
     recordingLink: iv.meetingRecordingUrl || "",
