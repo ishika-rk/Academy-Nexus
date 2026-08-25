@@ -4542,7 +4542,6 @@ function InterviewsPage() {
   const [listenerError, setListenerError] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState(null);
-  const [lastSyncedAt, setLastSyncedAt] = useState(null);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -4567,7 +4566,6 @@ function InterviewsPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
-      setLastSyncedAt(data.syncedAt || new Date().toISOString());
     } catch (err) {
       setSyncError(err.message || "Sync failed");
     } finally {
@@ -4579,6 +4577,14 @@ function InterviewsPage() {
     setBucketTab(id);
     setSubTab(INTERVIEW_BUCKETS.find(b => b.id === id).subheaders[0] || "");
   };
+
+  // Derived from each doc's own `syncedAt` (written by api/ic-interviews.js on every pull sync)
+  // rather than local component state, so "Last synced" survives page reloads and reflects
+  // syncs triggered from any client, not just the one that clicked "Sync Now" this session.
+  const lastSyncedAt = academyInterviews.reduce(
+    (max, iv) => (iv.syncedAt && (!max || iv.syncedAt > max) ? iv.syncedAt : max),
+    null
+  );
 
   const slotKey = `${bucketTab}:${subTab}`;
   const academyRowBuilder = ACADEMY_ROW_BUILDERS[slotKey];
