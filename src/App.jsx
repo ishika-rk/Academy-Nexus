@@ -4234,15 +4234,22 @@ function InterviewDataTable({ columns, rows, source }) {
                   const hasValue = value !== undefined && value !== null && value !== "";
                   // Interview Integrity Score shows just the number in the cell, but the
                   // underlying proctoring/compliance checks (what was actually flagged) are more
-                  // useful than the bare score — clicking pops those up instead.
+                  // useful than the bare score — clicking pops those up instead. Same idea for
+                  // a Part Avg cell: the Interview App's written descriptor behind that rating
+                  // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
-                  const clickable = hasValue || !!details;
+                  const descriptor = row._domainDescriptors?.[col.key];
+                  const clickable = hasValue || !!details || !!descriptor;
                   return (
                     <td
                       key={col.key}
                       style={{ ...tdBase, cursor: clickable ? "pointer" : "default" }}
                       title={clickable ? "Click to view full entry" : undefined}
-                      onClick={clickable ? () => setExpanded(details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) } : { label: col.label, value }) : undefined}
+                      onClick={clickable ? () => setExpanded(
+                        details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
+                        : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
+                        : { label: col.label, value }
+                      ) : undefined}
                     >
                       {hasValue ? value : "—"}
                     </td>
@@ -4484,6 +4491,12 @@ function fillRubricColumns(row, iv, columns) {
     const domain = domains[groupNameToDomainKey(col.group.name)] || {};
     if (/Avg$/.test(col.key)) {
       row[col.key] = round2(domain.domain_rating ?? "");
+      // The Interview App sends a written descriptor alongside domain_rating, explaining the
+      // score — surfaced in a popup when clicking the cell (see InterviewDataTable).
+      if (domain.descriptor) {
+        row._domainDescriptors = row._domainDescriptors || {};
+        row._domainDescriptors[col.key] = domain.descriptor;
+      }
     } else {
       const fieldKey = RUBRIC_FIELD_KEY_OVERRIDES[col.key] || labelToFieldKey(col.label);
       row[col.key] = round2(domain.cards?.[0]?.[fieldKey] ?? "");
