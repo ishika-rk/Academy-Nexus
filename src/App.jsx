@@ -4239,7 +4239,11 @@ function InterviewDataTable({ columns, rows, source }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  const clickable = hasValue || !!details || !!descriptor;
+                  // TEMPORARY debug aid, 2026-08-27 (round 3): re-checking after the Interview
+                  // App team's latest fix — when a rubric cell has no descriptor, fall back to
+                  // dumping the raw domain object we looked it up in. Remove once diagnosed.
+                  const debugInfo = row._domainDebug?.[col.key];
+                  const clickable = hasValue || !!details || !!descriptor || !!debugInfo;
                   return (
                     <td
                       key={col.key}
@@ -4248,6 +4252,7 @@ function InterviewDataTable({ columns, rows, source }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
+                        : debugInfo ? { label: `${col.label} — DEBUG (no descriptor found)`, value: `Looked up fieldKey: "${debugInfo.fieldKey}"\n\nRaw domain object:\n${JSON.stringify(debugInfo.domain, null, 2)}` }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -4503,6 +4508,11 @@ function fillRubricColumns(row, iv, columns) {
         row._domainDescriptors = row._domainDescriptors || {};
         row._domainDescriptors[col.key] = descriptor;
       }
+      // TEMPORARY debug aid, 2026-08-27 (round 3): re-checking after the Interview App team's
+      // latest fix — stash what fieldKey we looked up and the raw domain object so the cell
+      // click popup can show it when no descriptor is found. Remove once diagnosed.
+      row._domainDebug = row._domainDebug || {};
+      row._domainDebug[col.key] = { fieldKey, domain };
     }
   }
   return row;
