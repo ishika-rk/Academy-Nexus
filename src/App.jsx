@@ -4183,10 +4183,19 @@ function csvEscape(value) {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+// Rating cells with a written descriptor (see fillRubricColumns) show it in a popup on
+// click in the table, which a static CSV can't do — so the descriptor is appended inline
+// to the score here instead, rather than being lost on export.
+function csvCellValue(row, col) {
+  const value = row[col.key];
+  const descriptor = row._domainDescriptors?.[col.key];
+  return descriptor ? `${value ?? ""} — ${descriptor}` : value;
+}
+
 function downloadCsv(filename, columns, rows) {
   const lines = [
     columns.map(c => csvEscape(c.label)).join(","),
-    ...rows.map(r => columns.map(c => csvEscape(r[c.key])).join(",")),
+    ...rows.map(r => columns.map(c => csvEscape(csvCellValue(r, c))).join(",")),
   ];
   const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
