@@ -4189,7 +4189,7 @@ function csvEscape(value) {
 function csvCellValue(row, col) {
   const value = row[col.key];
   const descriptor = row._domainDescriptors?.[col.key];
-  return descriptor ? `${value ?? ""} — ${descriptor}` : value;
+  return descriptor ? `${value ?? ""} - ${descriptor}` : value;
 }
 
 function downloadCsv(filename, columns, rows) {
@@ -4197,7 +4197,9 @@ function downloadCsv(filename, columns, rows) {
     columns.map(c => csvEscape(c.label)).join(","),
     ...rows.map(r => columns.map(c => csvEscape(csvCellValue(r, c))).join(",")),
   ];
-  const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+  // Excel doesn't reliably detect UTF-8 without a BOM and otherwise renders any non-ASCII
+  // character (names, remarks, descriptors) as garbled mojibake — prepend one.
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
