@@ -4178,19 +4178,131 @@ function buildGroupedHeaderSegments(columns) {
 
 const INTERVIEW_PAGE_SIZE = 10;
 
-function InterviewDataTable({ columns, rows, source }) {
+function csvEscape(value) {
+  const s = value === undefined || value === null ? "" : String(value);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadCsv(filename, columns, rows) {
+  const lines = [
+    columns.map(c => csvEscape(c.label)).join(","),
+    ...rows.map(r => columns.map(c => csvEscape(r[c.key])).join(",")),
+  ];
+  const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Google-Sheets-style column filter: a funnel icon in the header opens a checklist of every
+// distinct value present in that column; `selected === null` means "all" (no filter applied).
+function StatusFilterHeader({ label, options, selected, onChange, thStyle, rowSpan }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const isChecked = (v) => !selected || selected.has(v);
+  const toggle = (v) => {
+    const next = new Set(selected || options);
+    if (next.has(v)) next.delete(v); else next.add(v);
+    onChange(next.size === options.length ? null : next);
+  };
+
+  return (
+    <th ref={ref} rowSpan={rowSpan} style={{ ...thStyle, position: "relative" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+        <span>{label}</span>
+        <button onClick={() => setOpen(o => !o)} title="Filter" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: selected ? C.accent : C.muted, display: "inline-flex", flexShrink: 0 }}>
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M2 3h12l-4.5 5.5V13l-3 1.5V8.5L2 3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /></svg>
+        </button>
+      </div>
+      {open && (
+        <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 20, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.18)", padding: 8, minWidth: 170, textAlign: "left", textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <button onClick={() => onChange(null)} style={{ background: "none", border: "none", color: C.accent, cursor: "pointer", fontSize: 11, fontWeight: 700, padding: 0, fontFamily: "inherit" }}>Select all</button>
+            <button onClick={() => onChange(new Set())} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 11, fontWeight: 700, padding: 0, fontFamily: "inherit" }}>Clear</button>
+          </div>
+          <div style={{ maxHeight: 200, overflowY: "auto" }}>
+            {options.length === 0 ? (
+              <div style={{ fontSize: 12, color: C.muted, padding: "4px 0" }}>No values yet</div>
+            ) : options.map(opt => (
+              <label key={opt} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 0", cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={isChecked(opt)} onChange={() => toggle(opt)} />
+                {opt}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </th>
+  );
+}
+
+function InterviewDataTable({ columns, rows, source, exportLabel }) {
   const [expanded, setExpanded] = useState(null); // { label, value } | null
   const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState(null); // null = all; Set = only these values
+
+  // "Status"/"Final Status"/"Clearance Status" columns all use one of these two keys across
+  // every bucket's column set — whichever is present gets the Google-Sheets-style filter.
+  const statusCol = columns.find(c => c.key === "status" || c.key === "finalStatus");
+  const statusOptions = statusCol
+    ? [...new Set(rows.map(r => r[statusCol.key]).filter(v => v !== undefined && v !== null && v !== ""))].sort()
+    : [];
+
+  const searchLower = search.trim().toLowerCase();
+  const searchedRows = searchLower
+    ? rows.filter(r => columns.some(c => String(r[c.key] ?? "").toLowerCase().includes(searchLower)))
+    : rows;
+  const filteredRows = statusCol && statusFilter
+    ? searchedRows.filter(r => statusFilter.has(r[statusCol.key]))
+    : searchedRows;
+
+  useEffect(() => { setPage(1); }, [search, statusFilter]);
+
   const hasGroups = columns.some(c => c.group);
   const segments = hasGroups ? buildGroupedHeaderSegments(columns) : null;
-  const totalPages = Math.max(1, Math.ceil(rows.length / INTERVIEW_PAGE_SIZE));
-  const pageRows = rows.slice((page - 1) * INTERVIEW_PAGE_SIZE, page * INTERVIEW_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / INTERVIEW_PAGE_SIZE));
+  const clampedPage = Math.min(page, totalPages);
+  const pageRows = filteredRows.slice((clampedPage - 1) * INTERVIEW_PAGE_SIZE, clampedPage * INTERVIEW_PAGE_SIZE);
 
   const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", border: `1px solid ${C.border}`, padding: "8px 10px", textAlign: "left", color: C.muted, whiteSpace: "normal", lineHeight: 1.4 };
   const tdBase = { border: `1px solid ${C.border}`, padding: "8px 10px", width: INTERVIEW_COL_WIDTH, minWidth: INTERVIEW_COL_WIDTH, maxWidth: INTERVIEW_COL_WIDTH, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.text };
 
+  const renderUngroupedTh = (col, rowSpan) => col.key === statusCol?.key ? (
+    <StatusFilterHeader key={col.key} label={col.label} options={statusOptions} selected={statusFilter} onChange={setStatusFilter} thStyle={{ ...thBase, background: C.surfaceAlt }} rowSpan={rowSpan} />
+  ) : (
+    <th key={col.key} rowSpan={rowSpan} style={{ ...thBase, background: C.surfaceAlt }}>{col.label}</th>
+  );
+
   return (
     <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div style={{ position: "relative", flex: "0 1 280px" }}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }}><circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.4" /><path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search…"
+            style={{ width: "100%", padding: "7px 10px 7px 30px", fontSize: 12, border: `1px solid ${C.border}`, borderRadius: 7, fontFamily: "inherit", color: C.text, background: C.surface, boxSizing: "border-box" }}
+          />
+        </div>
+        <Btn variant="secondary" size="sm" onClick={() => downloadCsv(`${exportLabel || "interviews"}.csv`, columns, filteredRows)}>Export CSV</Btn>
+      </div>
+
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
         <table style={{ borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
           <colgroup>
@@ -4202,9 +4314,7 @@ function InterviewDataTable({ columns, rows, source }) {
                 <tr>
                   {segments.map((seg, i) => seg.group ? (
                     <th key={i} colSpan={seg.cols.length} style={{ ...thBase, textAlign: "center", background: seg.group.header, color: seg.group.headerText, border: `1px solid ${seg.group.header}` }}>{seg.group.name}</th>
-                  ) : (
-                    <th key={i} rowSpan={2} style={{ ...thBase, background: C.surfaceAlt }}>{seg.cols[0].label}</th>
-                  ))}
+                  ) : renderUngroupedTh(seg.cols[0], 2))}
                 </tr>
                 <tr>
                   {segments.filter(seg => seg.group).flatMap((seg, si) => seg.cols.map((col, ci) => (
@@ -4214,17 +4324,15 @@ function InterviewDataTable({ columns, rows, source }) {
               </>
             ) : (
               <tr style={{ background: C.surfaceAlt }}>
-                {columns.map(col => (
-                  <th key={col.key} style={thBase}>{col.label}</th>
-                ))}
+                {columns.map(col => renderUngroupedTh(col))}
               </tr>
             )}
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {filteredRows.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} style={{ padding: "28px 12px", textAlign: "center", color: C.muted, fontSize: 12, border: `1px solid ${C.border}` }}>
-                  No data yet — this will populate from {source}.
+                  {rows.length === 0 ? `No data yet — this will populate from ${source}.` : "No rows match your search/filter."}
                 </td>
               </tr>
             ) : pageRows.map((row, i) => (
@@ -4261,24 +4369,24 @@ function InterviewDataTable({ columns, rows, source }) {
         </table>
       </div>
 
-      {rows.length > 0 && totalPages > 1 && (
+      {filteredRows.length > 0 && totalPages > 1 && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14, padding: "0 2px" }}>
           <span style={{ fontSize: 12, color: C.muted }}>
-            {(page - 1) * INTERVIEW_PAGE_SIZE + 1}–{Math.min(page * INTERVIEW_PAGE_SIZE, rows.length)} of {rows.length}
+            {(clampedPage - 1) * INTERVIEW_PAGE_SIZE + 1}–{Math.min(clampedPage * INTERVIEW_PAGE_SIZE, filteredRows.length)} of {filteredRows.length}
           </span>
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
-              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: page === 1 ? "not-allowed" : "pointer", color: page === 1 ? C.muted : C.text, fontFamily: "inherit" }}>
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={clampedPage === 1}
+              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: clampedPage === 1 ? "not-allowed" : "pointer", color: clampedPage === 1 ? C.muted : C.text, fontFamily: "inherit" }}>
               ← Prev
             </button>
             {Array.from({ length: totalPages }, (_, k) => k + 1).map(pg => (
               <button key={pg} onClick={() => setPage(pg)}
-                style={{ background: pg === page ? C.accent : C.surface, border: `1px solid ${pg === page ? C.accent : C.border}`, borderRadius: 7, padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: pg === page ? "#fff" : C.text, fontFamily: "inherit" }}>
+                style={{ background: pg === clampedPage ? C.accent : C.surface, border: `1px solid ${pg === clampedPage ? C.accent : C.border}`, borderRadius: 7, padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: pg === clampedPage ? "#fff" : C.text, fontFamily: "inherit" }}>
                 {pg}
               </button>
             ))}
-            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: page === totalPages ? "not-allowed" : "pointer", color: page === totalPages ? C.muted : C.text, fontFamily: "inherit" }}>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={clampedPage === totalPages}
+              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: clampedPage === totalPages ? "not-allowed" : "pointer", color: clampedPage === totalPages ? C.muted : C.text, fontFamily: "inherit" }}>
               Next →
             </button>
           </div>
@@ -4642,7 +4750,13 @@ function InterviewsPage() {
       )}
 
       {activeTable ? (
-        <InterviewDataTable key={`${bucketTab}:${subTab}`} columns={activeTable.columns} rows={activeRows} source={activeTable.source} />
+        <InterviewDataTable
+          key={`${bucketTab}:${subTab}`}
+          columns={activeTable.columns}
+          rows={activeRows}
+          source={activeTable.source}
+          exportLabel={`${activeBucket.label}${subTab ? ` - ${subTab}` : ""}`.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "")}
+        />
       ) : (
         <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
       )}
