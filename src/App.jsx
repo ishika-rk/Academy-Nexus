@@ -4358,7 +4358,11 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  const clickable = hasValue || !!details || !!descriptor;
+                  // TEMPORARY debug aid, 2026-08-27: clicking Candidate ID dumps the full raw
+                  // synced doc so we can find the Candidate UID's actual field name. Remove
+                  // once identified (see academyCommonFields / ic-interviews.js).
+                  const rawDebug = col.key === "candidateId" ? row._rawDebug : null;
+                  const clickable = hasValue || !!details || !!descriptor || !!rawDebug;
                   return (
                     <td
                       key={col.key}
@@ -4367,6 +4371,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
+                        : rawDebug ? { label: "Candidate ID — DEBUG (raw synced doc)", value: JSON.stringify(rawDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -4457,6 +4462,9 @@ function academyCommonFields(iv) {
     // 2026-08-14, per our request (meetLink, the join link, was wrongly used here before).
     recordingLink: iv.meetingRecordingUrl || "",
     transcriptLink: iv.transcriptUrl || "",
+    // TEMPORARY debug field, 2026-08-27: passed through so the Candidate ID cell can show the
+    // raw synced doc while we identify the Candidate UID's actual field name. Remove once found.
+    _rawDebug: iv._rawDebug || null,
   };
 }
 
