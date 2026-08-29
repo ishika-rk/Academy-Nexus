@@ -66,6 +66,9 @@ export default async function handler(req, res) {
       const feedback = r.feedback || {};
       return {
         id: d.id,
+        // The actual Candidate ID (Academy's own student UID) — confirmed via a live debug
+        // search, 2026-08-28. Trimmed: the source value carries a trailing tab character.
+        candidateUid: (r.candidateUid || "").trim(),
         candidateName: r.candidateName || "",
         candidateEmail: r.candidateEmail || "",
         interviewerEmail: r.interviewerEmail || "",
@@ -104,10 +107,6 @@ export default async function handler(req, res) {
         // fields alongside meetLink, confirmed via a live debug search.
         meetingRecordingUrl: r.meetingRecordingUrl || "",
         transcriptUrl: r.transcriptUrl || "",
-        // TEMPORARY debug field, 2026-08-27: the Interview App team added a Candidate UID
-        // somewhere in the payload but we don't know the exact key yet — stash the whole raw
-        // doc so the Interviews page can show it for inspection. Remove once identified.
-        _rawDebug: r,
       };
     });
 
