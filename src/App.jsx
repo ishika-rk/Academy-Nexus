@@ -4692,6 +4692,46 @@ const FRONTEND_DEV_COLUMNS = [
   { key: "status", label: "Clearance Status" },
 ];
 
+// Same color-per-section treatment as FRONTEND_DEV_GROUPS above; DSA Theory has no
+// Rating/Remarks split per the header spec, so it stays an ungrouped single column.
+const DSA_GROUPS = {
+  problem1Approach: { name: "Problem 1 Approach", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  problem1Code: { name: "Problem 1 Code", header: "#C55A11", headerText: "#fff", sub: "#FBE2D5", subText: "#1f2937" },
+  problem2Approach: { name: "Problem 2 Approach", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+  problem2Code: { name: "Problem 2 Code", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  complexityOptimisation: { name: "Complexity & Optimisation", header: "#7030A0", headerText: "#fff", sub: "#E8DAEF", subText: "#1f2937" },
+  communication: { name: "Communication", header: "#C00000", headerText: "#fff", sub: "#F2DCDB", subText: "#1f2937" },
+};
+
+const DSA_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "candidateResume", label: "Candidate Resume" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
+  { key: "problem1ApproachRating", label: "Problem 1 Approach", subLabel: "Rating (0-5)", group: DSA_GROUPS.problem1Approach },
+  { key: "problem1ApproachRemarks", label: "Problem 1 Approach Remarks", subLabel: "Remarks", group: DSA_GROUPS.problem1Approach },
+  { key: "problem1CodeRating", label: "Problem 1 Code", subLabel: "Rating (0-5)", group: DSA_GROUPS.problem1Code },
+  { key: "problem1CodeRemarks", label: "Problem 1 Code Remarks", subLabel: "Remarks", group: DSA_GROUPS.problem1Code },
+  { key: "problem2ApproachRating", label: "Problem 2 Approach", subLabel: "Rating (0-5)", group: DSA_GROUPS.problem2Approach },
+  { key: "problem2ApproachRemarks", label: "Problem 2 Approach Remarks", subLabel: "Remarks", group: DSA_GROUPS.problem2Approach },
+  { key: "problem2CodeRating", label: "Problem 2 Code", subLabel: "Rating (0-5)", group: DSA_GROUPS.problem2Code },
+  { key: "problem2CodeRemarks", label: "Problem 2 Code Remarks", subLabel: "Remarks", group: DSA_GROUPS.problem2Code },
+  { key: "complexityOptimisationRating", label: "Complexity & Optimisation", subLabel: "Rating (0-5)", group: DSA_GROUPS.complexityOptimisation },
+  { key: "complexityOptimisationRemarks", label: "Complexity & Optimisation Remarks", subLabel: "Remarks", group: DSA_GROUPS.complexityOptimisation },
+  { key: "dsaTheory", label: "DSA Theory" },
+  { key: "communicationRating", label: "Communication", subLabel: "Rating (0-5)", group: DSA_GROUPS.communication },
+  { key: "communicationRemarks", label: "Communication Remarks", subLabel: "Remarks", group: DSA_GROUPS.communication },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score" },
+  { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "verdict", label: "Verdict" },
+  { key: "status", label: "Clearance Status" },
+];
+
 const INTERVIEW_TABLE_COLUMNS = {
   "A:NxtMock": { columns: NXTMOCK_COLUMNS, source: "the Dashboard via a service account" },
   "A:TR1": { columns: TR1_COLUMNS, source: "the Interview App" },
@@ -4699,6 +4739,7 @@ const INTERVIEW_TABLE_COLUMNS = {
   "B:TR1": { columns: BUCKET_B_TR1_COLUMNS, source: "the Interview App" },
   "B:TR2": { columns: BUCKET_B_TR2_COLUMNS, source: "the Interview App" },
   "D:": { columns: FRONTEND_DEV_COLUMNS, source: "the Interview App" },
+  "E:": { columns: DSA_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
