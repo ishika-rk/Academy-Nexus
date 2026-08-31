@@ -4692,14 +4692,14 @@ const FRONTEND_DEV_COLUMNS = [
   { key: "status", label: "Clearance Status" },
 ];
 
-// Same color-per-section treatment as FRONTEND_DEV_GROUPS above; DSA Theory has no
-// Rating/Remarks split per the header spec, so it stays an ungrouped single column.
+// Same color-per-section treatment as FRONTEND_DEV_GROUPS above.
 const DSA_GROUPS = {
   problem1Approach: { name: "Problem 1 Approach", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
   problem1Code: { name: "Problem 1 Code", header: "#C55A11", headerText: "#fff", sub: "#FBE2D5", subText: "#1f2937" },
   problem2Approach: { name: "Problem 2 Approach", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
   problem2Code: { name: "Problem 2 Code", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
   complexityOptimisation: { name: "Complexity & Optimisation", header: "#7030A0", headerText: "#fff", sub: "#E8DAEF", subText: "#1f2937" },
+  dsaTheory: { name: "DSA Theory", header: "#31859C", headerText: "#fff", sub: "#DAEEF3", subText: "#1f2937" },
   communication: { name: "Communication", header: "#C00000", headerText: "#fff", sub: "#F2DCDB", subText: "#1f2937" },
 };
 
@@ -4722,7 +4722,8 @@ const DSA_COLUMNS = [
   { key: "problem2CodeRemarks", label: "Problem 2 Code Remarks", subLabel: "Remarks", group: DSA_GROUPS.problem2Code },
   { key: "complexityOptimisationRating", label: "Complexity & Optimisation", subLabel: "Rating (0-5)", group: DSA_GROUPS.complexityOptimisation },
   { key: "complexityOptimisationRemarks", label: "Complexity & Optimisation Remarks", subLabel: "Remarks", group: DSA_GROUPS.complexityOptimisation },
-  { key: "dsaTheory", label: "DSA Theory" },
+  { key: "dsaTheoryRating", label: "DSA Theory", subLabel: "Rating (0-5)", group: DSA_GROUPS.dsaTheory },
+  { key: "dsaTheoryRemarks", label: "DSA Theory Remarks", subLabel: "Remarks", group: DSA_GROUPS.dsaTheory },
   { key: "communicationRating", label: "Communication", subLabel: "Rating (0-5)", group: DSA_GROUPS.communication },
   { key: "communicationRemarks", label: "Communication Remarks", subLabel: "Remarks", group: DSA_GROUPS.communication },
   { key: "overallRemarks", label: "Overall Remarks" },
