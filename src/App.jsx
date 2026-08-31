@@ -4513,8 +4513,8 @@ const INTERVIEW_BUCKETS = [
   { id: "A", label: "Bucket A", subheaders: ["NxtMock", "TR1", "TR2"] },
   { id: "B", label: "Bucket B", subheaders: ["TR1", "TR2"] },
   { id: "C", label: "Bucket C", subheaders: [] },
-  { id: "D", label: "Frontend Development", subheaders: [] },
-  { id: "E", label: "Programming with Problem Solving (DSA)", subheaders: [] },
+  { id: "FRONTEND", label: "Frontend Development", subheaders: [] },
+  { id: "DSA", label: "Programming with Problem Solving (DSA)", subheaders: [] },
 ];
 
 const NXTMOCK_COLUMNS = [
@@ -4739,8 +4739,8 @@ const INTERVIEW_TABLE_COLUMNS = {
   "C:": { columns: BUCKET_C_COLUMNS, source: "the Interview App" },
   "B:TR1": { columns: BUCKET_B_TR1_COLUMNS, source: "the Interview App" },
   "B:TR2": { columns: BUCKET_B_TR2_COLUMNS, source: "the Interview App" },
-  "D:": { columns: FRONTEND_DEV_COLUMNS, source: "the Interview App" },
-  "E:": { columns: DSA_COLUMNS, source: "the Interview App" },
+  "FRONTEND:": { columns: FRONTEND_DEV_COLUMNS, source: "the Interview App" },
+  "DSA:": { columns: DSA_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
@@ -5021,12 +5021,12 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
 // buckets the Interview Coordinator App had at the time) landed in a table with the wrong
 // column schema.
 //
-// Frontend Development and DSA are NOT part of that "Bucket X" naming convention — per the
-// Interview Coordinator App team, those are standalone templates whose name IS the full
+// Frontend Development and DSA are NOT buckets at all — there's no "Bucket D"/"Bucket E" on
+// the Interview Coordinator App's side, they're standalone templates whose name IS the full
 // templateName value (confirmed 2026-08-31), matched directly rather than via the regex below.
 const DIRECT_TEMPLATE_SLOTS = {
-  "Frontend Development": "D:",
-  "Programming with Problem Solving (DSA)": "E:",
+  "Frontend Development": "FRONTEND:",
+  "Programming with Problem Solving (DSA)": "DSA:",
 };
 function parseAcademySlot(templateName) {
   const name = (templateName || "").trim();
@@ -5278,7 +5278,7 @@ const ACADEMY_ROW_BUILDERS = {
   // Frontend Development submission, same as B/C were before their overrides were confirmed.
   // A wrong/unconfirmed field key just renders "—" (see fillRubricColumns' round2(undefined)),
   // it won't show a fabricated number.
-  "D:": (iv) => fillRubricColumns({
+  "FRONTEND:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
     finalScore: round2(iv.finalVerdict ?? ""),
@@ -5287,8 +5287,8 @@ const ACADEMY_ROW_BUILDERS = {
     verdict: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
     status: academyOutcomeStatus(iv),
   }, iv, FRONTEND_DEV_COLUMNS),
-  // Same best-effort rubric mapping as "D:" above — unconfirmed against real DSA data yet.
-  "E:": (iv) => fillRubricColumns({
+  // Same best-effort rubric mapping as "FRONTEND:" above — unconfirmed against real DSA data yet.
+  "DSA:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
     finalScore: round2(iv.finalVerdict ?? ""),
