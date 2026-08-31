@@ -12,7 +12,28 @@ const BUCKETS = ["New Students Only", "Old Students Only", "Old + New (Mixed)"];
 const SECTIONS = ["Aptitude", "Technical", "Domain"];
 // For Config Library type filter
 const EXAM_TYPES = ["Placement Online Assessment", "Preliminary Online Assessment", "DSA Assessment", "Offline Placement Exam", "Technical Assessment", "Aptitude Test", "Domain Assessment"];
-const OFFLINE_EXAM_TYPES = ["Offline Placement Exam"];
+// Any exam.type in this list gets Offline treatment app-wide: multi-location chips,
+// per-student Location column in the CSV, the embedded Drive Expenses widget on Exam
+// Details, and inclusion in the Drive Expenses page/tabs. NOT the same as "uses a Cycle
+// number" or "uses Week/Batch" — those are separate opt-in lists below, since Competency
+// Offline needs Locations but has no Cycle and isn't scheduled by Week/Batch (goes by
+// Drive Date instead).
+const OFFLINE_EXAM_TYPES = ["Offline Placement Exam", "Competency Offline"];
+// Only these exam types show/require a Cycle number (Add/Edit Exam modal, completeness
+// check, "C{n}" badge). Competency Offline deliberately excluded — see above.
+const CYCLE_EXAM_TYPES = ["Offline Placement Exam"];
+// Exam types in this list skip Week/Batch calculation entirely (no W{n}/B{n} badges, no
+// week/batch-based Mock/Main tags) — identified by Drive Date instead. Everything NOT in
+// this list keeps the existing Week/Batch behavior, including other custom categories.
+const NO_BATCH_WEEK_TYPES = ["Competency Offline", "Competency Online"];
+const usesBatchWeek = (type) => !NO_BATCH_WEEK_TYPES.includes(type);
+// Exam types that take a POC-entered Domain instead of a Week/Batch identifier — the
+// Exam Details table swaps its first two columns (Exam → Domain, W/B → Date) for these.
+const COMPETENCY_EXAM_TYPES = ["Competency Offline", "Competency Online"];
+// Exam types with no defined Mock/Main tag convention yet — genTags returns "—" for both
+// rather than guessing a format. Add a real format to genTags (and drop the type from this
+// list) once one is actually defined.
+const NO_TAG_TYPES = ["Competency Assessments"];
 const getExamProgramHead = (e) => {
   const prog = e.program || "core-assessments";
   if (prog === "online" || prog === "offline") return prog;
@@ -120,8 +141,9 @@ function getCompletenessInfo(exam) {
     if (!exam.mockEndDate)   missing.push("Mock end date");
     if (!exam.mockSlot)      missing.push("Mock time slot");
   }
-  if (exam.type === "Offline Placement Exam" && !exam.cycle) missing.push("Cycle number");
-  if (exam.type === "Offline Placement Exam" && !(exam.locations && exam.locations.length)) missing.push("Exam location");
+  if (CYCLE_EXAM_TYPES.includes(exam.type) && !exam.cycle) missing.push("Cycle number");
+  if (OFFLINE_EXAM_TYPES.includes(exam.type) && !(exam.locations && exam.locations.length)) missing.push("Exam location");
+  if (COMPETENCY_EXAM_TYPES.includes(exam.type) && !exam.domain) missing.push("Domain");
   return { isComplete: missing.length === 0, missing };
 }
 
@@ -254,7 +276,6 @@ function downloadStudentTemplate(isOffline = false) {
 
 const CATEGORY_KEYS = ["venue", "travel", "accommodation", "food"];
 const CATEGORY_LABELS = { venue: "Venue", travel: "Travel", accommodation: "Accommodation", food: "Food" };
-const SHARED_LOCATION = "Shared";
 
 const emptyExpenseCategories = () =>
   CATEGORY_KEYS.reduce((acc, k) => ({ ...acc, [k]: { items: [] } }), {});
@@ -288,19 +309,26 @@ function deleteReceipt(path) {
 
 // Generate tags based on exam type, date, kind (Mock/Main), batch, cycle
 function genTags(exam, allExams) {
+  if (NO_TAG_TYPES.includes(exam.type)) return { mockTag: "—", mainTag: "—" };
   const isPOA = ["Placement Online Assessment", "Preliminary Online Assessment", "DSA Assessment"].includes(exam.type);
-  const isOffline = exam.type === "Offline Placement Exam";
+  const isOffline = OFFLINE_EXAM_TYPES.includes(exam.type);
+  const usesBW = usesBatchWeek(exam.type);
 
-  const wMock = getWeek(exam.mainStartDate, allExams);
-  const wMain = getWeek(exam.mainStartDate, allExams);
-  const batch = getBatch(exam, allExams);
+  const wMock = usesBW ? getWeek(exam.mainStartDate, allExams) : null;
+  const wMain = wMock;
+  const batch = usesBW ? getBatch(exam, allExams) : null;
   const batchStr = `B${batch}`;
   const cycle = exam.cycle ? `CYCLE-${exam.cycle}` : null;
 
   let mockTag = "—";
   let mainTag = "—";
 
-  if (isPOA) {
+  if (!usesBW) {
+    // No Week/Batch/Cycle for this type (e.g. Competency Offline) — identify by Drive Date instead.
+    const slug = (exam.type || "").trim().toUpperCase().replace(/\s+/g, "_").slice(0, 20);
+    mockTag = exam.mockStartDate ? `ACADEMY_${slug}_MOCK_${exam.mockStartDate.replace(/-/g, "")}` : "—";
+    mainTag = exam.mainStartDate ? `ACADEMY_${slug}_MAIN_${exam.mainStartDate.replace(/-/g, "")}` : "—";
+  } else if (isPOA) {
     mockTag = wMock ? `ACADEMY_PLACEMENT_ELIGIBILITY_MOCK_PRELIMS+DSA_W${wMock}` : "—";
     mainTag = wMain ? `ACADEMY_PLACEMENT_ELIGIBILITY_MAIN_PRELIMS+DSA_${batchStr}_W${wMain}` : "—";
   } else if (isOffline) {
@@ -308,7 +336,7 @@ function genTags(exam, allExams) {
     mainTag = wMain ? `ACADEMY_PLACEMENT_ELIGIBILITY_MAIN_OFFLINEDRIVE_${batchStr}_W${wMain}${cycle ? `_${cycle}` : ""}` : "—";
   } else {
     // Generic fallback for custom exam titles
-    const slug = exam.type.toUpperCase().replace(/\s+/g, "_").slice(0, 20);
+    const slug = (exam.type || "").trim().toUpperCase().replace(/\s+/g, "_").slice(0, 20);
     mockTag = wMock ? `ACADEMY_${slug}_MOCK_W${wMock}` : "—";
     mainTag = wMain ? `ACADEMY_${slug}_MAIN_${batchStr}_W${wMain}` : "—";
   }
@@ -319,6 +347,17 @@ function genTags(exam, allExams) {
 function fmtDate(d) {
   if (!d) return "—";
   return new Date(d + "T00:00:00").toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Compact "which drive is this" label for Drive Expenses' exam pickers/columns — always
+// includes the exam category (shortened for the default preset) so multiple Offline-style
+// categories (Offline Placement Exam, Competency Offline, ...) with overlapping cycle
+// numbers stay distinguishable, and falls back to the drive date when Cycle isn't set yet.
+function examShortLabel(ex) {
+  if (!ex) return "—";
+  const typeLabel = ex.type === "Offline Placement Exam" ? "Offline" : (ex.type || "Exam");
+  const cyclePart = ex.cycle ? `Cycle ${ex.cycle}` : (ex.mainStartDate ? fmtDate(ex.mainStartDate) : "");
+  return cyclePart ? `${typeLabel} · ${cyclePart}` : typeLabel;
 }
 
 function fmtDateRange(start, end) {
@@ -937,9 +976,65 @@ function EmptyState({ icon, title, sub }) {
 
 // ─── Drive Expense form (shared by ExamDetailsPage's embedded entry point and ExpensesPage) ──
 
-const inputS = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, color: C.text, fontFamily: "inherit", outline: "none" };
+const inputS = { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 10px", fontSize: 13, color: C.text, fontFamily: "inherit", outline: "none", width: "100%", boxSizing: "border-box" };
+const PR_STATUS_OPTIONS = ["Raised", "Approved", "Rejected", "Review needed", "NA"];
+const COMMUTE_PLAN_OPTIONS = ["Bus", "Flight", "Train", "Local Commute"];
+const PAYMENT_CATEGORY_OPTIONS = ["MMT Wallet", "Petty Cash"];
+const PETTY_CASH_MODE_OPTIONS = ["Cash", "UPI"];
+const CASH_MEMO_OPTIONS = ["Yes", "No"];
+const CLAIM_STATUS_OPTIONS = ["Submitted", "Approved", "Rejected", "Review Needed"];
+const expTh = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 10px", whiteSpace: "nowrap" };
+const expTd = { padding: "6px 8px", borderTop: `1px solid ${C.border}`, verticalAlign: "middle" };
 
-function ExpenseLineItemRow({ item, catKey, examId, locationOptions, disabled, onChange, onRemove }) {
+function DrivePocCell({ pocs, disabled, onChange }) {
+  const [adding, setAdding] = useState(false);
+  const [input, setInput] = useState("");
+  const closePopup = () => { setAdding(false); setInput(""); };
+  const addPoc = () => {
+    const v = input.trim();
+    if (v && !(pocs || []).includes(v)) onChange([...(pocs || []), v]);
+    closePopup();
+  };
+  const removePoc = (name) => onChange((pocs || []).filter(p => p !== name));
+  return (
+    <>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+        {(pocs || []).map(p => (
+          <span key={p} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: C.accentLight, border: `1px solid ${C.border}`, borderRadius: 999, padding: "2px 4px 2px 8px", fontSize: 11, fontWeight: 600, color: C.text }}>
+            {p}
+            {!disabled && <button onClick={() => removePoc(p)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 12, lineHeight: 1, padding: "0 2px" }}>×</button>}
+          </span>
+        ))}
+        {!disabled && (
+          <button type="button" onClick={() => setAdding(true)} style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 999, width: 22, height: 22, cursor: "pointer", fontSize: 14, fontWeight: 700, color: C.accent, fontFamily: "inherit", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>+</button>
+        )}
+      </div>
+      {adding && (
+        <Modal title="Add Drive POC" onClose={closePopup} width={360}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <input autoFocus style={inputS} placeholder="Enter name" value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addPoc(); } }} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <Btn variant="secondary" onClick={closePopup}>Cancel</Btn>
+              <Btn onClick={addPoc}>Add</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+// onCommit (optional) lets a caller persist edits as they happen: it's fired immediately after
+// onChange for discrete fields (selects, dates, receipt actions), and on blur for free-typed
+// text/number fields — so autosave doesn't fire on every keystroke. Callers that only want a
+// local draft (e.g. the exam-details form, saved via its own explicit Save button) omit it.
+function ExpenseLineItemRow({ item, catKey, examId, locationOptions, disabled, onChange, onCommit, onRemove, leadingCells }) {
+  const isVenue = catKey === "venue";
+  const isTravel = catKey === "travel";
+  const commitBlur = () => onCommit?.();
+  const changeAndCommit = (patch) => { onChange(patch); onCommit?.(patch); };
   const handleFile = async (e) => {
     const file = e.target.files[0];
     e.target.value = "";
@@ -947,73 +1042,245 @@ function ExpenseLineItemRow({ item, catKey, examId, locationOptions, disabled, o
     onChange({ uploading: true, uploadProgress: 0 });
     try {
       const { url, path } = await uploadReceipt(examId, catKey, file, pct => onChange({ uploadProgress: pct }));
-      onChange({ receiptUrl: url, receiptPath: path, uploading: false });
+      changeAndCommit({ receiptUrl: url, receiptPath: path, uploading: false });
     } catch {
       onChange({ uploading: false });
     }
   };
   const removeReceipt = async () => {
     if (item.receiptPath) await deleteReceipt(item.receiptPath);
-    onChange({ receiptUrl: "", receiptPath: "" });
+    changeAndCommit({ receiptUrl: "", receiptPath: "" });
   };
-  return (
-    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-      <input style={{ ...inputS, flex: 3 }} placeholder="Description" value={item.description} disabled={disabled}
-        onChange={e => onChange({ description: e.target.value })} />
-      <input style={{ ...inputS, width: 90 }} type="number" min="0" placeholder="₹" value={item.amount} disabled={disabled}
-        onChange={e => onChange({ amount: e.target.value })} />
-      <input style={{ ...inputS, width: 132 }} type="date" value={item.date || ""} disabled={disabled}
-        onChange={e => onChange({ date: e.target.value })} />
-      <select style={{ ...inputS, width: 140 }} value={item.location || SHARED_LOCATION} disabled={disabled}
-        onChange={e => onChange({ location: e.target.value })}>
+
+  const amountCell = (
+    <td style={{ ...expTd, minWidth: 100 }}>
+      <input style={inputS} type="number" min="0" placeholder="₹" value={item.amount} disabled={disabled}
+        onChange={e => onChange({ amount: e.target.value })} onBlur={commitBlur} />
+    </td>
+  );
+  const dateCell = (
+    <td style={{ ...expTd, minWidth: 150 }}>
+      <input style={inputS} type="date" value={item.date || ""} disabled={disabled}
+        onChange={e => changeAndCommit({ date: e.target.value })} />
+    </td>
+  );
+  const locationCell = (
+    <td style={{ ...expTd, minWidth: 130 }}>
+      <select style={inputS} value={item.location || ""} disabled={disabled}
+        onChange={e => changeAndCommit({ location: e.target.value })}>
+        <option value=""></option>
         {locationOptions.map(l => <option key={l} value={l}>{l}</option>)}
       </select>
-      <div style={{ width: 118, flexShrink: 0, fontSize: 11 }}>
-        {item.receiptUrl ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <a href={item.receiptUrl} target="_blank" rel="noreferrer" style={{ color: C.accent, textDecoration: "underline" }}>Receipt</a>
-            {!disabled && <button onClick={removeReceipt} style={{ background: "none", border: "none", cursor: "pointer", color: C.red }}>✕</button>}
-          </div>
-        ) : item.uploading ? (
-          <span style={{ color: C.muted }}>Uploading… {item.uploadProgress || 0}%</span>
-        ) : !disabled ? (
-          <label style={{ color: C.accent, cursor: "pointer", textDecoration: "underline" }}>
-            Attach receipt
-            <input type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={handleFile} />
-          </label>
-        ) : <span style={{ color: C.muted }}>—</span>}
-      </div>
+    </td>
+  );
+  const receiptCell = (
+    <td style={{ ...expTd, minWidth: 120, fontSize: 11 }}>
+      {item.receiptUrl ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <a href={item.receiptUrl} target="_blank" rel="noreferrer" style={{ color: C.accent, textDecoration: "underline" }}>Receipt</a>
+          {!disabled && <button onClick={removeReceipt} style={{ background: "none", border: "none", cursor: "pointer", color: C.red }}>✕</button>}
+        </div>
+      ) : item.uploading ? (
+        <span style={{ color: C.muted }}>Uploading… {item.uploadProgress || 0}%</span>
+      ) : !disabled ? (
+        <label style={{ color: C.accent, cursor: "pointer", textDecoration: "underline" }}>
+          Attach receipt
+          <input type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={handleFile} />
+        </label>
+      ) : <span style={{ color: C.muted }}>—</span>}
+    </td>
+  );
+  const removeCell = (
+    <td style={{ ...expTd, width: 32, textAlign: "center" }}>
       {!disabled && (
-        <button onClick={onRemove} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1, flexShrink: 0 }}>✕</button>
+        <button onClick={onRemove} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 15, lineHeight: 1 }}>✕</button>
       )}
-    </div>
+    </td>
+  );
+
+  if (isTravel) {
+    return (
+      <tr>
+        {leadingCells}
+        <td style={{ ...expTd, minWidth: 180 }}>
+          <DrivePocCell pocs={item.drivePocs} disabled={disabled} onChange={drivePocs => changeAndCommit({ drivePocs })} />
+        </td>
+        {locationCell}
+        {dateCell}
+        <td style={{ ...expTd, minWidth: 180 }}>
+          <input style={inputS} placeholder="Purpose" value={item.purpose || ""} disabled={disabled}
+            onChange={e => onChange({ purpose: e.target.value })} onBlur={commitBlur} />
+        </td>
+        {amountCell}
+        <td style={{ ...expTd, minWidth: 130 }}>
+          <select style={inputS} value={item.commutePlan || ""} disabled={disabled}
+            onChange={e => changeAndCommit({ commutePlan: e.target.value })}>
+            <option value=""></option>
+            {COMMUTE_PLAN_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </td>
+        <td style={{ ...expTd, minWidth: 140 }}>
+          <select style={inputS} value={item.paymentCategory || ""} disabled={disabled}
+            onChange={e => changeAndCommit({ paymentCategory: e.target.value, paymentMode: e.target.value === "Petty Cash" ? item.paymentMode : "" })}>
+            <option value=""></option>
+            {PAYMENT_CATEGORY_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </td>
+        <td style={{ ...expTd, minWidth: 130 }}>
+          {item.paymentCategory === "Petty Cash" ? (
+            <select style={inputS} value={item.paymentMode || ""} disabled={disabled}
+              onChange={e => changeAndCommit({ paymentMode: e.target.value })}>
+              <option value=""></option>
+              {PETTY_CASH_MODE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          ) : (
+            <span style={{ fontSize: 12, color: C.muted }}>—</span>
+          )}
+        </td>
+        <td style={{ ...expTd, minWidth: 130 }}>
+          <select style={inputS} value={item.cashMemoNeeded || ""} disabled={disabled}
+            onChange={e => changeAndCommit({ cashMemoNeeded: e.target.value })}>
+            <option value=""></option>
+            {CASH_MEMO_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </td>
+        <td style={{ ...expTd, minWidth: 100 }}>
+          <input style={inputS} placeholder="Claim ID" value={item.claimId || ""} disabled={disabled}
+            onChange={e => onChange({ claimId: e.target.value })} onBlur={commitBlur} />
+        </td>
+        <td style={{ ...expTd, minWidth: 150 }}>
+          <select style={inputS} value={item.claimIdStatus || ""} disabled={disabled}
+            onChange={e => changeAndCommit({ claimIdStatus: e.target.value })}>
+            <option value=""></option>
+            {CLAIM_STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </td>
+        {receiptCell}
+        {removeCell}
+      </tr>
+    );
+  }
+
+  return (
+    <tr>
+      {leadingCells}
+      <td style={{ ...expTd, minWidth: 180 }}>
+        {isVenue ? (
+          <input style={inputS} placeholder="Venue name (college/hall)" value={item.venueName || ""} disabled={disabled}
+            onChange={e => onChange({ venueName: e.target.value })} onBlur={commitBlur} />
+        ) : (
+          <input style={inputS} placeholder="Description" value={item.description} disabled={disabled}
+            onChange={e => onChange({ description: e.target.value })} onBlur={commitBlur} />
+        )}
+      </td>
+      {amountCell}
+      {!isVenue && dateCell}
+      {locationCell}
+      {isVenue && (
+        <>
+          <td style={{ ...expTd, minWidth: 140 }}>
+            <input style={inputS} placeholder="Vendor Name" value={item.vendorName || ""} disabled={disabled}
+              onChange={e => onChange({ vendorName: e.target.value })} onBlur={commitBlur} />
+          </td>
+          <td style={{ ...expTd, minWidth: 110 }}>
+            <input style={inputS} placeholder="Vendor ID" value={item.vendorId || ""} disabled={disabled}
+              onChange={e => onChange({ vendorId: e.target.value })} onBlur={commitBlur} />
+          </td>
+          <td style={{ ...expTd, minWidth: 100 }}>
+            <input style={inputS} placeholder="PR ID" value={item.prId || ""} disabled={disabled}
+              onChange={e => onChange({ prId: e.target.value })} onBlur={commitBlur} />
+          </td>
+          <td style={{ ...expTd, minWidth: 150 }}>
+            <select style={inputS} value={item.prStatus || ""} disabled={disabled}
+              onChange={e => changeAndCommit({ prStatus: e.target.value })}>
+              <option value=""></option>
+              {PR_STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </td>
+        </>
+      )}
+      {receiptCell}
+      {removeCell}
+    </tr>
+  );
+}
+
+// Column headings for the expense line-item tables — shared by the embedded form section,
+// the Expense Tracker page table, and its edit/add popup so every rendering of a row is labeled.
+function ExpenseTableHeaderRow({ catKey, showExamCol }) {
+  const isVenue = catKey === "venue";
+  const isTravel = catKey === "travel";
+  return (
+    <tr style={{ background: C.surfaceAlt }}>
+      {showExamCol && <th style={expTh}>Exam / Cycle</th>}
+      {isTravel ? (
+        <>
+          <th style={expTh}>Drive POC</th>
+          <th style={expTh}>Location</th>
+          <th style={expTh}>Date</th>
+          <th style={expTh}>Purpose</th>
+          <th style={expTh}>Amount</th>
+          <th style={expTh}>Commute Plan</th>
+          <th style={expTh}>Payment Category</th>
+          <th style={expTh}>Payment Mode</th>
+          <th style={expTh}>Cash Memo Needed</th>
+          <th style={expTh}>Claim ID</th>
+          <th style={expTh}>Claim ID Status</th>
+        </>
+      ) : (
+        <>
+          <th style={expTh}>{isVenue ? "Venue Name" : "Description"}</th>
+          <th style={expTh}>Amount</th>
+          {!isVenue && <th style={expTh}>Date</th>}
+          <th style={expTh}>Location</th>
+          {isVenue && (
+            <>
+              <th style={expTh}>Vendor Name</th>
+              <th style={expTh}>Vendor ID</th>
+              <th style={expTh}>PR ID</th>
+              <th style={expTh}>PR Status</th>
+            </>
+          )}
+        </>
+      )}
+      <th style={expTh}>Receipt</th>
+      <th style={expTh}></th>
+    </tr>
   );
 }
 
 function ExpenseCategorySection({ catKey, items, examId, locationOptions, disabled, onChange }) {
   const addItem = () => onChange([...items, {
-    id: crypto.randomUUID(), description: "", amount: "", location: locationOptions[0] || SHARED_LOCATION,
+    id: crypto.randomUUID(), description: "", amount: "", location: "",
+    venueName: "", vendorName: "", vendorId: "", prId: "", prStatus: "",
+    drivePocs: [], commutePlan: "", paymentCategory: "", paymentMode: "", purpose: "", cashMemoNeeded: "", claimId: "", claimIdStatus: "",
     date: "", receiptUrl: "", receiptPath: "", addedAt: new Date().toISOString(),
   }]);
   const removeItem = (id) => onChange(items.filter(it => it.id !== id));
   const updateItem = (id, patch) => onChange(items.map(it => it.id === id ? { ...it, ...patch } : it));
-  const total = sumCategory(items);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{CATEGORY_LABELS[catKey]}</span>
-          {total > 0 && <Badge color="gray">₹{total.toLocaleString("en-IN")}</Badge>}
-        </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
         {!disabled && <Btn size="sm" variant="ghost" onClick={addItem}>+ Add item</Btn>}
       </div>
       {items.length === 0 ? (
         <div style={{ fontSize: 12, color: C.muted, fontStyle: "italic" }}>No {CATEGORY_LABELS[catKey].toLowerCase()} items yet</div>
-      ) : items.map(item => (
-        <ExpenseLineItemRow key={item.id} item={item} catKey={catKey} examId={examId} locationOptions={locationOptions}
-          disabled={disabled} onChange={patch => updateItem(item.id, patch)} onRemove={() => removeItem(item.id)} />
-      ))}
+      ) : (
+        <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <ExpenseTableHeaderRow catKey={catKey} />
+            </thead>
+            <tbody>
+              {items.map(item => (
+                <ExpenseLineItemRow key={item.id} item={item} catKey={catKey} examId={examId} locationOptions={locationOptions}
+                  disabled={disabled} onChange={patch => updateItem(item.id, patch)} onRemove={() => removeItem(item.id)} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -1026,8 +1293,9 @@ function ExpenseFormModal({ exam, expenseDoc, onSave, onClose, canWrite }) {
   });
   const [status, setStatus] = useState(expenseDoc?.status || "draft");
   const [saving, setSaving] = useState(false);
+  const [activeCategory, setActiveCategory] = useState(CATEGORY_KEYS[0]);
 
-  const locationOptions = [...(exam?.locations || []), SHARED_LOCATION];
+  const locationOptions = exam?.locations || [];
   const disabled = !canWrite || status === "final";
   const grandTotal = CATEGORY_KEYS.reduce((s, k) => s + sumCategory(categories[k].items), 0);
 
@@ -1038,7 +1306,8 @@ function ExpenseFormModal({ exam, expenseDoc, onSave, onClose, canWrite }) {
         ...acc,
         [k]: {
           items: categories[k].items
-            .filter(it => it.description || it.amount)
+            .filter(it => it.description || it.amount || it.venueName || it.vendorName || it.vendorId || it.prId
+              || it.purpose || it.claimId || (it.drivePocs && it.drivePocs.length > 0))
             .map(({ uploading, uploadProgress, ...rest }) => ({ ...rest, amount: parseFloat(rest.amount) || 0 })),
         },
       }), {});
@@ -1050,7 +1319,7 @@ function ExpenseFormModal({ exam, expenseDoc, onSave, onClose, canWrite }) {
   };
 
   return (
-    <Modal title={`Drive Expenses — ${exam?.type || ""}${exam?.cycle ? ` (Cycle ${exam.cycle})` : ""}`} onClose={onClose} width={760}>
+    <Modal title={`Drive Expenses — ${exam?.type || ""}${exam?.cycle ? ` (Cycle ${exam.cycle})` : ""}`} onClose={onClose} width={1080}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: 12, color: C.muted }}>
@@ -1061,13 +1330,25 @@ function ExpenseFormModal({ exam, expenseDoc, onSave, onClose, canWrite }) {
 
         <Divider />
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          {CATEGORY_KEYS.map(k => (
-            <ExpenseCategorySection key={k} catKey={k} items={categories[k].items} examId={exam?.id}
-              locationOptions={locationOptions} disabled={disabled}
-              onChange={items => setCategories(c => ({ ...c, [k]: { items } }))} />
-          ))}
+        <div style={{ display: "flex", gap: 4 }}>
+          {CATEGORY_KEYS.map(k => {
+            const catTotal = sumCategory(categories[k].items);
+            return (
+              <button key={k} onClick={() => setActiveCategory(k)} style={{
+                flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+                background: "none", border: "none", borderBottom: `2px solid ${activeCategory === k ? C.accent : "transparent"}`,
+                marginBottom: -2, padding: "8px 6px", cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s",
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: activeCategory === k ? C.accent : C.text }}>{CATEGORY_LABELS[k]}</span>
+                <span style={{ fontSize: 11, color: C.muted }}>{catTotal > 0 ? `₹${catTotal.toLocaleString("en-IN")}` : "—"}</span>
+              </button>
+            );
+          })}
         </div>
+
+        <ExpenseCategorySection catKey={activeCategory} items={categories[activeCategory].items} examId={exam?.id}
+          locationOptions={locationOptions} disabled={disabled}
+          onChange={items => setCategories(c => ({ ...c, [activeCategory]: { items } }))} />
 
         <div style={{ background: C.surfaceAlt, borderRadius: 8, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Grand Total</span>
@@ -1093,16 +1374,19 @@ function ExpenseFormModal({ exam, expenseDoc, onSave, onClose, canWrite }) {
 // ─── Page: Exam Details ───────────────────────────────────────────────────────
 
 // Exam Title field: preset chips + free-type input
-function ExamTitleField({ value, onChange }) {
-  const [custom, setCustom] = useState(!EXAM_TITLE_PRESETS.includes(value) && value !== "");
-  const isPreset = EXAM_TITLE_PRESETS.includes(value);
+function ExamTitleField({ value, onChange, existingCategories = [] }) {
+  // Presets plus every category POCs have actually used so far (custom ones included) —
+  // picking an existing category should never require retyping it from scratch.
+  const chips = [...EXAM_TITLE_PRESETS, ...existingCategories.filter(c => c && !EXAM_TITLE_PRESETS.includes(c))];
+  const [custom, setCustom] = useState(!chips.includes(value) && value !== "");
+  const isChip = chips.includes(value);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Exam Category</label>
-      {/* Preset chips */}
+      {/* Existing category chips */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {EXAM_TITLE_PRESETS.map(p => (
+        {chips.map(p => (
           <button key={p} type="button" onClick={() => { onChange(p); setCustom(false); }} style={{
             background: value === p && !custom ? C.accent : C.surfaceAlt,
             color: value === p && !custom ? "#fff" : C.text,
@@ -1111,20 +1395,20 @@ function ExamTitleField({ value, onChange }) {
             cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s"
           }}>{p}</button>
         ))}
-        <button type="button" onClick={() => { setCustom(true); if (isPreset) onChange(""); }} style={{
+        <button type="button" onClick={() => { setCustom(true); if (isChip) onChange(""); }} style={{
           background: custom ? C.accentLight : C.surfaceAlt,
           color: custom ? C.accentDark : C.muted,
           border: `1px solid ${custom ? C.accent : C.border}`,
           borderRadius: 7, padding: "7px 14px", fontSize: 13, fontWeight: 600,
           cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s"
-        }}>✏️ Custom…</button>
+        }}>+ Create New Category</button>
       </div>
-      {/* Free-type input shown when custom selected */}
+      {/* Free-type input shown when creating a brand-new category */}
       {custom && (
         <input
           autoFocus
-          type="text" value={isPreset ? "" : value} onChange={e => onChange(e.target.value)}
-          placeholder="Type exam category…"
+          type="text" value={isChip ? "" : value} onChange={e => onChange(e.target.value)}
+          placeholder="Type new exam category…"
           style={{ background: C.surface, border: `1px solid ${C.accent}`, borderRadius: 7, padding: "9px 12px", fontSize: 13, color: C.text, fontFamily: "inherit", outline: "none" }}
         />
       )}
@@ -1148,12 +1432,15 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
   // Custom exam categories (anything the user typed into "Exam Category" that isn't one of the
   // fixed presets) get their own tab, derived live from whatever's actually been saved.
   const customCategoryIds = [...new Set(exams.map(e => getExamCategoryHead(e)).filter(id => id !== "online" && id !== "offline"))].sort();
+  // Every exam type ever saved, so the Add/Edit Exam modal can offer existing categories
+  // (including custom ones) as chips instead of forcing a retype.
+  const allExamTypes = [...new Set(exams.map(e => e.type).filter(Boolean))].sort();
   const PROGRAMS = [
     { id: "online",  label: "Online" },
     { id: "offline", label: "Offline" },
     ...customCategoryIds.map(id => ({ id, label: id })),
   ];
-  const emptyForm = { type: "", requireMock: true, mockTitle: "", mainTitle: "", mockStartDate: "", mockEndDate: "", mainStartDate: "", mainEndDate: "", mockSlot: "", mainSlot: "", cycle: "", locations: [], program: "online" };
+  const emptyForm = { type: "", requireMock: true, mockTitle: "", mainTitle: "", mockStartDate: "", mockEndDate: "", mainStartDate: "", mainEndDate: "", mockSlot: "", mainSlot: "", cycle: "", locations: [], domain: "", program: "online" };
   const [form, setForm] = useState(emptyForm);
   const [locationInput, setLocationInput] = useState("");
   const [filter, setFilter] = useState("all");
@@ -1219,7 +1506,8 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
       form.mainEndDate !== originalForm.mainEndDate ||
       form.mainSlot !== originalForm.mainSlot
     );
-    const formToSave = { ...form, program: deriveProgramForType(form.type) };
+    const trimmedType = (form.type || "").trim();
+    const formToSave = { ...form, type: trimmedType, program: deriveProgramForType(trimmedType) };
     const savedId = await onSaveExam(formToSave, editing);
     if (pendingStudentFile) {
       const r = await handleUploadFile(savedId, pendingStudentFile, uploads, onAddUpload, isOffline, form.locations || []);
@@ -1306,10 +1594,16 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const statusColor = { upcoming: "blue", completed: "green", flagged: "gray", cancelled: "red" };
+  // Competency Online/Offline tabs show a POC-entered Domain instead of the (redundant,
+  // same-as-the-tab) exam type, and a plain Date instead of Week/Batch badges.
+  const isCompetencyTab = COMPETENCY_EXAM_TYPES.includes(programTab);
 
   const isPOA = ["Placement Online Assessment", "Preliminary Online Assessment", "DSA Assessment"].includes(form.type);
-  const isOffline = form.type === "Offline Placement Exam";
-  const needsCycle = isOffline;
+  const isOffline = OFFLINE_EXAM_TYPES.includes(form.type);
+  const needsLocations = isOffline;
+  const needsCycle = CYCLE_EXAM_TYPES.includes(form.type);
+  const needsDomain = COMPETENCY_EXAM_TYPES.includes(form.type);
+  const formUsesBW = usesBatchWeek(form.type);
 
   return (
     <div>
@@ -1487,15 +1781,16 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
               <tr style={{ background: C.surfaceAlt }}>
                 <th style={{ width: 4, padding: 0 }} />
                 <th style={{ width: 28, padding: 0 }} />
-                {["Exam", "W / B", "Mock", "Main", "Status", "Details", "Notified", "Students", ""].map(h => (
+                {[isCompetencyTab ? "Domain" : "Exam", isCompetencyTab ? "Date" : "W / B", "Mock", "Main", "Status", "Details", "Notified", "Students", ""].map(h => (
                   <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {paginated.map((ex, i) => {
-                const wMain = getWeek(ex.mainStartDate, exams);
-                const batch = getBatch(ex, exams);
+                const examUsesBW = usesBatchWeek(ex.type);
+                const wMain = examUsesBW ? getWeek(ex.mainStartDate, exams) : null;
+                const batch = examUsesBW ? getBatch(ex, exams) : null;
                 const { isComplete, missing } = getCompletenessInfo(ex);
                 const amber = "#d97706";
                 const examStatus = getExamStatus(ex);
@@ -1519,11 +1814,19 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                           <path d="M3 1l4 4-4 4" stroke={C.muted} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
                       </td>
-                      <td style={{ ...tdS, fontWeight: 700, opacity: dim ? 0.55 : 1 }}>{ex.type}</td>
+                      <td style={{ ...tdS, fontWeight: 700, opacity: dim ? 0.55 : 1 }}>
+                        {isCompetencyTab
+                          ? (ex.domain || <span style={{ color: C.muted, fontWeight: 400, fontStyle: "italic" }}>No domain</span>)
+                          : (ex.type === programTab ? "" : ex.type)}
+                      </td>
                       <td style={{ ...tdS, opacity: dim ? 0.55 : 1 }}>
                         <div style={{ display: "flex", gap: 4 }}>
-                          {!isCancelled && wMain && <Badge color="orange">W{wMain}</Badge>}
-                          {!isCancelled && <Badge color="blue">B{batch}</Badge>}
+                          {!examUsesBW
+                            ? <span style={{ fontSize: 12, color: C.muted }}>{fmtDate(ex.mainStartDate)}</span>
+                            : <>
+                                {!isCancelled && wMain && <Badge color="orange">W{wMain}</Badge>}
+                                {!isCancelled && <Badge color="blue">B{batch}</Badge>}
+                              </>}
                           {ex.cycle && <Badge color="yellow">C{ex.cycle}</Badge>}
                         </div>
                       </td>
@@ -1572,7 +1875,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                       <tr>
                         <td colSpan={11} style={{ padding: 0, borderBottom: isLast ? "none" : `1px solid ${C.border}` }}>
                           <div style={{ padding: "14px 24px 16px 28px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
-                            {ex.type === "Offline Placement Exam" && ex.locations && ex.locations.length > 0 && (
+                            {OFFLINE_EXAM_TYPES.includes(ex.type) && ex.locations && ex.locations.length > 0 && (
                               <div style={{ marginBottom: 12 }}>
                                 <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase", marginBottom: 4 }}>Exam Locations</div>
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1582,7 +1885,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                                 </div>
                               </div>
                             )}
-                            {ex.type === "Offline Placement Exam" && can(role, "expenses.read") && (() => {
+                            {OFFLINE_EXAM_TYPES.includes(ex.type) && can(role, "expenses.read") && (() => {
                               const expenseDoc = (expenses || []).find(e => e.id === ex.id);
                               const total = expenseGrandTotal(expenseDoc);
                               return (
@@ -1679,10 +1982,10 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
                                   )}
                                   <div style={{ display: "flex", gap: 8 }}>
                                     <input type="file" accept=".csv" ref={el => fileRefs.current[ex.id] = el} style={{ display: "none" }}
-                                      onChange={e => { const f = e.target.files[0]; e.target.value = ""; handleUploadFile(ex.id, f, uploads, onAddUpload, ex.type === "Offline Placement Exam", ex.locations || []).then(r => r && setUploadedResult(r)); }} />
+                                      onChange={e => { const f = e.target.files[0]; e.target.value = ""; handleUploadFile(ex.id, f, uploads, onAddUpload, OFFLINE_EXAM_TYPES.includes(ex.type), ex.locations || []).then(r => r && setUploadedResult(r)); }} />
                                     <Btn variant="secondary" size="sm" onClick={e => { e.stopPropagation(); fileRefs.current[ex.id]?.click(); }}>Upload CSV</Btn>
                                     <Btn variant="secondary" size="sm" onClick={e => e.stopPropagation()}>Source from Database</Btn>
-                                    <button onClick={e => { e.stopPropagation(); downloadStudentTemplate(ex.type === "Offline Placement Exam"); }} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                    <button onClick={e => { e.stopPropagation(); downloadStudentTemplate(OFFLINE_EXAM_TYPES.includes(ex.type)); }} title="Download CSV template" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 10px", fontSize: 11, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
                                       <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                                       Template
                                     </button>
@@ -1732,6 +2035,13 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
 
             {/* Header */}
             <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <button
+                onClick={() => { openEdit(savedExam); setSavedExam(null); }}
+                title="Back to edit"
+                style={{ width: 36, height: 36, borderRadius: "50%", background: C.surfaceAlt, border: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, padding: 0 }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.text} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+              </button>
               <div style={{ width: 52, height: 52, borderRadius: "50%", background: C.greenLight, border: `2px solid #a8d5b8`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke={C.green} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
               </div>
@@ -2152,7 +2462,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
             {/* Exam Category */}
-            <ExamTitleField value={form.type} onChange={v => setForm({ ...form, type: v, program: deriveProgramForType(v) })} />
+            <ExamTitleField value={form.type} onChange={v => setForm({ ...form, type: v, program: deriveProgramForType(v) })} existingCategories={allExamTypes} />
 
             <Divider />
 
@@ -2212,8 +2522,9 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
 
             </div>
 
-            {/* Week + Batch preview */}
-            {(form.mockStartDate || form.mainStartDate) && form.type && (
+            {/* Week + Batch preview — skipped for types in NO_BATCH_WEEK_TYPES (e.g. Competency
+                Offline), which are identified by Drive Date instead. */}
+            {formUsesBW && (form.mockStartDate || form.mainStartDate) && form.type && (
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 {form.mockStartDate && <div style={{ background: C.accentLight, borderRadius: 8, padding: "8px 14px", display: "flex", gap: 6, alignItems: "center" }}>
                   <span style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8 }}>MOCK WEEK</span>
@@ -2231,9 +2542,11 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
               </div>
             )}
 
-            {/* Locations + Cycle (only for Offline) — a single drive/cycle can span multiple venues,
-                with the per-student Location column in the CSV saying which venue each student goes to. */}
-            {needsCycle && (() => {
+            {/* Locations (needsLocations) — a single drive can span multiple venues, with the
+                per-student Location column in the CSV saying which venue each student goes to.
+                Cycle Number (needsCycle, further below) is a separate, narrower list — Competency
+                Offline needs Locations but has no Cycle. */}
+            {needsLocations && (() => {
               const addLocation = () => {
                 const v = locationInput.trim();
                 if (!v || (form.locations || []).includes(v)) { setLocationInput(""); return; }
@@ -2270,6 +2583,9 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
             })()}
             {needsCycle && (
               <Field label="Cycle Number" value={form.cycle} onChange={v => setForm({ ...form, cycle: v })} placeholder="e.g. 9" />
+            )}
+            {needsDomain && (
+              <Field label="Domain" value={form.domain} onChange={v => setForm({ ...form, domain: v })} placeholder="e.g. Frontend Development" />
             )}
 
             <Divider />
@@ -3749,6 +4065,131 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
 
 // ─── Page: Drive Expenses ───────────────────────────────────────────────────────
 
+// One row's inline-editable cells — hosts ExpenseLineItemRow (the same field-editing logic used
+// by the exam-details entry point) plus a leading exam picker, wired for autosave via onCommit.
+function DriveExpenseTableRow({ item, catKey, offlineExams, canWrite, onChange, onCommit, onRemove }) {
+  const exam = offlineExams.find(e => e.id === item.examId);
+  const locationOptions = exam?.locations || [];
+  const leadingCells = (
+    <td style={{ ...expTd, minWidth: 130 }}>
+      <select style={inputS} value={item.examId || ""} disabled={!canWrite}
+        onChange={e => { const patch = { examId: e.target.value }; onChange(patch); onCommit?.(patch); }}>
+        <option value=""></option>
+        {offlineExams.map(ex => <option key={ex.id} value={ex.id}>{examShortLabel(ex)}</option>)}
+      </select>
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{exam ? fmtDate(exam.mainStartDate) : "—"}</div>
+    </td>
+  );
+  return (
+    <ExpenseLineItemRow item={item} catKey={catKey} examId={item.examId} locationOptions={locationOptions}
+      disabled={!canWrite} onChange={onChange} onCommit={onCommit} onRemove={onRemove} leadingCells={leadingCells} />
+  );
+}
+
+// Keeps a local draft of one row so mid-edit keystrokes aren't clobbered by the Firestore listener
+// refreshing `item` out from under it, and calls onSave whenever a field commits (see ExpenseLineItemRow
+// for which fields commit immediately vs. on blur).
+function DriveExpenseEditableRow({ item, catKey, offlineExams, expenses, canWrite, onSave, onRemove }) {
+  const [draft, setDraft] = useState(item);
+  const exam = offlineExams.find(ex => ex.id === draft.examId);
+  const locked = !!exam && (expenses || []).find(e => e.id === exam.id)?.status === "final";
+  const editable = canWrite && !locked;
+
+  const handleChange = (patch) => setDraft(d => ({ ...d, ...patch }));
+  const handleCommit = (patch) => {
+    const next = patch ? { ...draft, ...patch } : draft;
+    if (!next.examId) return;
+    onSave(next);
+  };
+
+  return (
+    <DriveExpenseTableRow item={draft} catKey={catKey} offlineExams={offlineExams}
+      canWrite={editable} onChange={handleChange} onCommit={handleCommit} onRemove={onRemove} />
+  );
+}
+
+function DriveExpenseCategoryPage({ catKey, exams, expenses, onSaveExpense, role }) {
+  const canWrite = can(role, "expenses.write");
+  const offlineExams = [...(exams || [])].filter(e => OFFLINE_EXAM_TYPES.includes(e.type))
+    .sort((a, b) => (b.mainStartDate || "").localeCompare(a.mainStartDate || ""));
+
+  const items = offlineExams.flatMap(exam => {
+    const doc = (expenses || []).find(e => e.id === exam.id);
+    return (doc?.categories?.[catKey]?.items || []).map(it => ({ ...it, examId: exam.id }));
+  });
+
+  // Newly added rows with no real content yet, so they haven't round-tripped through Firestore.
+  // Once a row's content survives the cleaning filter below it appears in `items` instead, so we
+  // drop it here to avoid rendering the same row twice.
+  const [pendingItems, setPendingItems] = useState([]);
+  const visiblePending = pendingItems.filter(p => !items.some(it => it.id === p.id));
+
+  const saveItemsForExam = async (examId, itemsForExam) => {
+    const doc = (expenses || []).find(e => e.id === examId);
+    const cleaned = itemsForExam
+      .filter(it => it.description || it.amount || it.venueName || it.vendorName || it.vendorId || it.prId
+        || it.purpose || it.claimId || (it.drivePocs && it.drivePocs.length > 0))
+      .map(({ uploading, uploadProgress, examId: _e, ...rest }) => ({ ...rest, amount: parseFloat(rest.amount) || 0 }));
+    await onSaveExpense(examId, { [catKey]: { items: cleaned } }, doc?.status || "draft");
+  };
+
+  const saveItem = async (draftIn, originalExamId) => {
+    const draft = draftIn.addedAt ? draftIn : { ...draftIn, addedAt: new Date().toISOString() };
+    const exists = items.some(it => it.id === draft.id);
+    const nextItems = exists ? items.map(it => it.id === draft.id ? draft : it) : [...items, draft];
+    const examIdsToSave = new Set([draft.examId, originalExamId].filter(Boolean));
+    for (const examId of examIdsToSave) {
+      await saveItemsForExam(examId, nextItems.filter(it => it.examId === examId));
+    }
+  };
+  const removeItem = async (item) => {
+    if (!items.some(it => it.id === item.id)) { setPendingItems(p => p.filter(x => x.id !== item.id)); return; }
+    const nextItems = items.filter(it => it.id !== item.id);
+    await saveItemsForExam(item.examId, nextItems.filter(it => it.examId === item.examId));
+  };
+
+  const addItem = () => setPendingItems(p => [...p, {
+    id: crypto.randomUUID(), examId: offlineExams[0]?.id || "",
+    description: "", amount: "", location: "",
+    venueName: "", vendorName: "", vendorId: "", prId: "", prStatus: "",
+    drivePocs: [], commutePlan: "", paymentCategory: "", paymentMode: "", purpose: "", cashMemoNeeded: "", claimId: "", claimIdStatus: "",
+    date: "", receiptUrl: "", receiptPath: "", addedAt: "",
+  }]);
+
+  if (offlineExams.length === 0) {
+    return <EmptyState icon="📋" title="No Offline drives yet" sub="Offline Placement Exams will appear here once scheduled in Exam Details." />;
+  }
+
+  const rows = [...items, ...visiblePending];
+
+  return (
+    <div>
+      {canWrite && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <Btn size="sm" variant="ghost" onClick={addItem}>+ Add item</Btn>
+        </div>
+      )}
+      {rows.length === 0 ? (
+        <EmptyState icon="💰" title={`No ${CATEGORY_LABELS[catKey].toLowerCase()} entries yet`} sub="Click + Add item to get started." />
+      ) : (
+        <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <ExpenseTableHeaderRow catKey={catKey} showExamCol />
+            </thead>
+            <tbody>
+              {rows.map(item => (
+                <DriveExpenseEditableRow key={item.id} item={item} catKey={catKey} offlineExams={offlineExams} expenses={expenses}
+                  canWrite={canWrite} onSave={draft => saveItem(draft, item.examId)} onRemove={() => removeItem(item)} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role }) {
   const EXPENSES_PAGE_SIZE = 10;
   const [expPage, setExpPage] = useState(1);
@@ -3758,15 +4199,13 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
   const [filterDateStart, setFilterDateStart] = useState("");
   const [filterDateEnd, setFilterDateEnd] = useState("");
   const [groupBy, setGroupBy] = useState("none"); // "none" | "category" | "location"
-  const [showPicker, setShowPicker] = useState(false);
-  const [pickerExamId, setPickerExamId] = useState("");
   const [expenseModalExam, setExpenseModalExam] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [expTab, setExpTab] = useState("dashboard");
 
   useEffect(() => { setExpPage(1); }, [filterExamId, filterLocation, filterStatus, filterDateStart, filterDateEnd]);
 
-  const offlineExams = (exams || []).filter(e => e.type === "Offline Placement Exam");
-  const examsWithoutExpense = offlineExams.filter(e => !(expenses || []).some(exp => exp.id === e.id));
+  const offlineExams = (exams || []).filter(e => OFFLINE_EXAM_TYPES.includes(e.type));
   const allLocations = [...new Set(offlineExams.flatMap(e => e.locations || []))].sort();
 
   const examTitle = (exam) => exam ? `${exam.type}${exam.cycle ? ` — Cycle ${exam.cycle}` : ""}` : "Unknown exam";
@@ -3797,20 +4236,44 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
     total: filteredItems.reduce((s, it) => s + (it.amount || 0), 0),
   };
 
-  const byLocation = allLocations.map(loc => ({
-    location: loc,
-    total: filteredItems.filter(it => it.location === loc).reduce((s, it) => s + (it.amount || 0), 0),
-  })).filter(l => l.total > 0);
+  const byLocation = allLocations.map(loc => {
+    const locItems = filteredItems.filter(it => it.location === loc);
+    const dates = [...new Set(locItems.map(it => it.exam?.mainStartDate).filter(Boolean))].sort();
+    return {
+      location: loc,
+      dates: dates.map(fmtDate).join(", "),
+      ...CATEGORY_KEYS.reduce((acc, k) => ({ ...acc, [k]: locItems.filter(it => it.category === k).reduce((s, it) => s + (it.amount || 0), 0) }), {}),
+      total: locItems.reduce((s, it) => s + (it.amount || 0), 0),
+    };
+  }).filter(l => l.total > 0);
+
+  // Venue-name breakdown — unlike Location (a fixed pre-declared list per exam), the actual venue
+  // (college/hall) is freeform and differs every cycle, so this groups by whatever was typed in.
+  const byVenue = Object.values(
+    filteredItems.filter(it => it.category === "venue").reduce((acc, it) => {
+      const key = `${it.venueName || "(Unnamed venue)"}|${it.location || ""}`;
+      if (!acc[key]) acc[key] = { venueName: it.venueName || "(Unnamed venue)", location: it.location || "—", total: 0, exams: new Set(), dates: new Set() };
+      acc[key].total += it.amount || 0;
+      acc[key].exams.add(examTitle(it.exam));
+      if (it.exam?.mainStartDate) acc[key].dates.add(it.exam.mainStartDate);
+      return acc;
+    }, {})
+  ).map(v => ({ ...v, exams: [...v.exams].join(", "), dates: [...v.dates].sort().map(fmtDate).join(", ") })).sort((a, b) => b.total - a.total);
 
   const exportCSV = () => {
     const sorted = [...filteredItems].sort((a, b) => {
       if (groupBy === "category") return a.category.localeCompare(b.category) || (a.location || "").localeCompare(b.location || "");
       if (groupBy === "location") return (a.location || "").localeCompare(b.location || "") || a.category.localeCompare(b.category);
+      if (groupBy === "venue") return (a.venueName || "").localeCompare(b.venueName || "");
       return 0;
     });
-    const headers = ["Exam", "Cycle", "Category", "Location", "Description", "Amount", "Date", "Status"];
+    const headers = ["Exam", "Cycle", "Category", "Location", "Venue Name", "Vendor Name", "Vendor ID", "PR ID", "PR Status",
+      "Purpose", "Drive POC", "Commute Plan", "Payment Category", "Payment Mode", "Cash Memo Needed", "Claim ID", "Claim ID Status",
+      "Description", "Amount", "Date", "Status"];
     const rows = sorted.map(it => [
-      it.exam.type, it.exam.cycle || "", CATEGORY_LABELS[it.category], it.location || "",
+      it.exam.type, it.exam.cycle || "", CATEGORY_LABELS[it.category], it.location || "", it.venueName || "",
+      it.vendorName || "", it.vendorId || "", it.prId || "", it.prStatus || "",
+      it.purpose || "", (it.drivePocs || []).join(", "), it.commutePlan || "", it.paymentCategory || "", it.paymentMode || "", it.cashMemoNeeded || "", it.claimId || "", it.claimIdStatus || "",
       it.description || "", it.amount || 0, it.date || "", it.exam && expenses.find(e => e.id === it.examId)?.status || "",
     ]);
     const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -3830,16 +4293,28 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
-        <div>
-          <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Drive Expenses</h1>
-          <p style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Single source of truth for Venue, Travel, Accommodation & Food costs across Offline Drives.</p>
-        </div>
-        {can(role, "expenses.write") && (
-          <Btn onClick={() => { setPickerExamId(""); setShowPicker(true); }} icon="+">Add Drive Expense</Btn>
-        )}
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 24, fontWeight: 900, color: C.text, margin: 0 }}>Drive Expenses</h1>
+        <p style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>Single source of truth for Venue, Travel, Accommodation & Food costs across Offline Drives.</p>
       </div>
 
+      {/* Tabs: Dashboard is read-only analysis; each category tab is where entries actually get added/edited. */}
+      <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${C.border}`, marginBottom: 20 }}>
+        {[{ id: "dashboard", label: "Dashboard" }, ...CATEGORY_KEYS.map(k => ({ id: k, label: CATEGORY_LABELS[k] }))].map(t => (
+          <button key={t.id} onClick={() => setExpTab(t.id)} style={{
+            background: "none", border: "none", borderBottom: `2px solid ${expTab === t.id ? C.accent : "transparent"}`,
+            marginBottom: -1, padding: "8px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer",
+            color: expTab === t.id ? C.accent : C.muted, fontFamily: "inherit", transition: "all 0.15s",
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {expTab !== "dashboard" && (
+        <DriveExpenseCategoryPage catKey={expTab} exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} role={role} />
+      )}
+
+      {expTab === "dashboard" && (
+      <>
       {/* Filters */}
       <Card style={{ padding: 16, marginBottom: 20 }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
@@ -3859,25 +4334,74 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase" }}>Group export by</div>
         <div style={{ display: "flex", gap: 4, background: C.surfaceAlt, borderRadius: 8, padding: 4, border: `1px solid ${C.border}` }}>
-          {[{ id: "none", label: "None" }, { id: "category", label: "Category" }, { id: "location", label: "Location" }].map(g => (
+          {[{ id: "none", label: "None" }, { id: "category", label: "Category" }, { id: "location", label: "Location" }, { id: "venue", label: "Venue" }].map(g => (
             <button key={g.id} onClick={() => setGroupBy(g.id)} style={{ background: groupBy === g.id ? C.surface : "transparent", border: "none", borderRadius: 6, padding: "5px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", color: groupBy === g.id ? C.text : C.muted, fontFamily: "inherit", boxShadow: groupBy === g.id ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>{g.label}</button>
           ))}
         </div>
       </div>
 
       {groupBy === "location" && byLocation.length > 0 ? (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
-          {byLocation.map(l => (
-            <Card key={l.location} style={{ padding: 14, minWidth: 140 }}>
-              <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>{l.location}</p>
-              <p style={{ fontSize: 18, fontWeight: 800, color: C.text, margin: "4px 0 0" }}>₹{l.total.toLocaleString("en-IN")}</p>
-            </Card>
-          ))}
-          <Card style={{ padding: 14, minWidth: 140, background: C.accentLight }}>
-            <p style={{ fontSize: 11, color: C.muted, margin: 0 }}>Grand Total</p>
-            <p style={{ fontSize: 18, fontWeight: 800, color: C.text, margin: "4px 0 0" }}>₹{summary.total.toLocaleString("en-IN")}</p>
+        <Card style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: C.surfaceAlt }}>
+                {["Location", "Drive Date", ...CATEGORY_KEYS.map(k => CATEGORY_LABELS[k]), "Total"].map(h => (
+                  <th key={h} style={thBase}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {byLocation.map(l => (
+                <tr key={l.location}>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{l.location}</td>
+                  <td style={{ ...tdS, color: C.muted }}>{l.dates || "—"}</td>
+                  {CATEGORY_KEYS.map(k => (
+                    <td key={k} style={tdS}>₹{l[k].toLocaleString("en-IN")}</td>
+                  ))}
+                  <td style={{ ...tdS, fontWeight: 800 }}>₹{l.total.toLocaleString("en-IN")}</td>
+                </tr>
+              ))}
+              <tr style={{ background: C.accentLight }}>
+                <td style={{ ...tdS, fontWeight: 800 }} colSpan={2}>Grand Total</td>
+                {CATEGORY_KEYS.map(k => (
+                  <td key={k} style={{ ...tdS, fontWeight: 800 }}>₹{summary[k].toLocaleString("en-IN")}</td>
+                ))}
+                <td style={{ ...tdS, fontWeight: 800 }}>₹{summary.total.toLocaleString("en-IN")}</td>
+              </tr>
+            </tbody>
+          </table>
+        </Card>
+      ) : groupBy === "venue" ? (
+        byVenue.length > 0 ? (
+          <Card style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: C.surfaceAlt }}>
+                  {["Venue Name", "Location", "Drive Date", "Exam / Cycle", "Venue Total"].map(h => (
+                    <th key={h} style={thBase}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {byVenue.map(v => (
+                  <tr key={`${v.venueName}|${v.location}`}>
+                    <td style={{ ...tdS, fontWeight: 700 }}>{v.venueName}</td>
+                    <td style={{ ...tdS, color: C.muted }}>{v.location}</td>
+                    <td style={{ ...tdS, color: C.muted }}>{v.dates || "—"}</td>
+                    <td style={{ ...tdS, color: C.muted }}>{v.exams}</td>
+                    <td style={{ ...tdS, fontWeight: 800 }}>₹{v.total.toLocaleString("en-IN")}</td>
+                  </tr>
+                ))}
+                <tr style={{ background: C.accentLight }}>
+                  <td style={{ ...tdS, fontWeight: 800 }} colSpan={4}>Grand Total (Venue category)</td>
+                  <td style={{ ...tdS, fontWeight: 800 }}>₹{summary.venue.toLocaleString("en-IN")}</td>
+                </tr>
+              </tbody>
+            </table>
           </Card>
-        </div>
+        ) : (
+          <EmptyState icon="📍" title="No venue expenses yet" sub="Add a Venue line item with a venue name to see the breakdown here." />
+        )
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 20 }}>
           {CATEGORY_KEYS.map(k => (
@@ -3925,9 +4449,7 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
                   <td style={{ ...tdS, fontWeight: 800 }}>₹{expenseGrandTotal(r).toLocaleString("en-IN")}</td>
                   <td style={tdS}><Badge color={r.status === "final" ? "green" : "gray"}>{r.status === "final" ? "Final" : "Draft"}</Badge></td>
                   <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
-                    <Btn size="sm" variant="secondary" onClick={() => setExpenseModalExam(r.exam)}>
-                      {can(role, "expenses.write") ? "Edit" : "View"}
-                    </Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => setExpenseModalExam(r.exam)}>View</Btn>
                     {can(role, "expenses.write") && (
                       <button onClick={() => setConfirmDelete(r)} style={{ marginLeft: 8, background: "none", border: "none", cursor: "pointer", color: C.red, fontSize: 12 }}>Delete</button>
                     )}
@@ -3954,35 +4476,13 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
         </Card>
       )}
 
-      {/* Exam picker for "Add Drive Expense" */}
-      {showPicker && (
-        <Modal title="Add Drive Expense" onClose={() => setShowPicker(false)} width={420}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {examsWithoutExpense.length === 0 ? (
-              <p style={{ fontSize: 13, color: C.muted }}>Every Offline exam already has a drive expense record. Edit an existing one from the table, or add a new Offline exam first in Exam Details.</p>
-            ) : (
-              <Field label="Offline Exam" value={pickerExamId} onChange={setPickerExamId}
-                options={examsWithoutExpense.map(e => ({ v: e.id, l: examTitle(e) }))} />
-            )}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <Btn variant="secondary" onClick={() => setShowPicker(false)}>Cancel</Btn>
-              <Btn disabled={!pickerExamId} onClick={() => {
-                const exam = examsWithoutExpense.find(e => e.id === pickerExamId);
-                setShowPicker(false);
-                setExpenseModalExam(exam);
-              }}>Continue</Btn>
-            </div>
-          </div>
-        </Modal>
-      )}
-
       {expenseModalExam && (
         <ExpenseFormModal
           exam={expenseModalExam}
           expenseDoc={(expenses || []).find(e => e.id === expenseModalExam.id)}
           onSave={(categories, status) => onSaveExpense(expenseModalExam.id, categories, status)}
           onClose={() => setExpenseModalExam(null)}
-          canWrite={can(role, "expenses.write")}
+          canWrite={false}
         />
       )}
 
@@ -3996,6 +4496,8 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
             <Btn variant="danger" onClick={async () => { await onDeleteExpense(confirmDelete.id); setConfirmDelete(null); }}>Delete</Btn>
           </div>
         </Modal>
+      )}
+      </>
       )}
     </div>
   );
@@ -4151,12 +4653,52 @@ const BUCKET_C_COLUMNS = [
   { key: "status", label: "Clearance Status" },
 ];
 
+// Each skill area gets its own color, matching the grouped-header treatment used in the
+// other buckets' tables, so a Score/Remarks pair is instantly identifiable by section.
+const FRONTEND_DEV_GROUPS = {
+  project: { name: "Project Deep-Dive", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  htmlCss: { name: "HTML & CSS", header: "#C55A11", headerText: "#fff", sub: "#FBE2D5", subText: "#1f2937" },
+  javascript: { name: "JavaScript", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+  react: { name: "React", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  machineCoding: { name: "Machine Coding", header: "#7030A0", headerText: "#fff", sub: "#E8DAEF", subText: "#1f2937" },
+  debug: { name: "Debug", header: "#C00000", headerText: "#fff", sub: "#F2DCDB", subText: "#1f2937" },
+};
+
+const FRONTEND_DEV_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "candidateResume", label: "Candidate Resume" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
+  { key: "projectDeepDive", label: "Project Deep-Dive", subLabel: "Rating (0-5)", group: FRONTEND_DEV_GROUPS.project },
+  { key: "projectRemarks", label: "Project Remarks", subLabel: "Remarks", group: FRONTEND_DEV_GROUPS.project },
+  { key: "htmlCss", label: "HTML & CSS", subLabel: "Rating (0-5)", group: FRONTEND_DEV_GROUPS.htmlCss },
+  { key: "htmlCssRemarks", label: "HTML & CSS Remarks", subLabel: "Remarks", group: FRONTEND_DEV_GROUPS.htmlCss },
+  { key: "javascript", label: "JavaScript", subLabel: "Rating (0-5)", group: FRONTEND_DEV_GROUPS.javascript },
+  { key: "javascriptRemarks", label: "JavaScript Remarks", subLabel: "Remarks", group: FRONTEND_DEV_GROUPS.javascript },
+  { key: "react", label: "React", subLabel: "Rating (0-5)", group: FRONTEND_DEV_GROUPS.react },
+  { key: "reactRemarks", label: "React Remarks", subLabel: "Remarks", group: FRONTEND_DEV_GROUPS.react },
+  { key: "machineCoding", label: "Machine Coding", subLabel: "Rating (0-5)", group: FRONTEND_DEV_GROUPS.machineCoding },
+  { key: "machineCodingRemarks", label: "Machine Coding Remarks", subLabel: "Remarks", group: FRONTEND_DEV_GROUPS.machineCoding },
+  { key: "debug", label: "Debug", subLabel: "Rating (0-5)", group: FRONTEND_DEV_GROUPS.debug },
+  { key: "debugRemarks", label: "Debug Remarks", subLabel: "Remarks", group: FRONTEND_DEV_GROUPS.debug },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score" },
+  { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "verdict", label: "Verdict" },
+  { key: "status", label: "Clearance Status" },
+];
+
 const INTERVIEW_TABLE_COLUMNS = {
   "A:NxtMock": { columns: NXTMOCK_COLUMNS, source: "the Dashboard via a service account" },
   "A:TR1": { columns: TR1_COLUMNS, source: "the Interview App" },
   "C:": { columns: BUCKET_C_COLUMNS, source: "the Interview App" },
   "B:TR1": { columns: BUCKET_B_TR1_COLUMNS, source: "the Interview App" },
   "B:TR2": { columns: BUCKET_B_TR2_COLUMNS, source: "the Interview App" },
+  "D:": { columns: FRONTEND_DEV_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
@@ -4329,7 +4871,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                 </tr>
                 <tr>
                   {segments.filter(seg => seg.group).flatMap((seg, si) => seg.cols.map((col, ci) => (
-                    <th key={`${si}-${ci}`} style={{ ...thBase, textAlign: "center", background: seg.group.sub, color: seg.group.subText }}>{col.label}</th>
+                    <th key={`${si}-${ci}`} style={{ ...thBase, textAlign: "center", background: seg.group.sub, color: seg.group.subText }}>{col.subLabel || col.label}</th>
                   )))}
                 </tr>
               </>
@@ -4564,11 +5106,6 @@ function titleCaseKey(key) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// Human-readable breakdown of the automated proctoring/compliance checks (domains.integrity) —
-// shown in a popup when clicking the Interview Integrity Score cell, since the score alone
-// doesn't say what was actually flagged. Field labels are title-cased from their raw keys rather
-// than matched word-for-word to the Interview Coordinator App's own phrasing (unconfirmed) — the
-// values themselves are exact.
 // Exact question wording + order from the Interview Coordinator App's own integrity checklist UI
 // (confirmed via screenshot, 2026-08-13) — field_gby0a is the one item without a semantic raw key
 // (likely a form field added later via the app's builder, which auto-generates an ID instead of
