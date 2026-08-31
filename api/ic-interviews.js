@@ -52,13 +52,15 @@ export default async function handler(req, res) {
 
   try {
     const db = await getIcDb();
-    // Academy templates are named with an "Academy" prefix (e.g. "Academy_Weekly_Evaluation").
-    // Firestore range query: templateName >= "Academy" && < "Academz" captures all of them —
-    // same trick the IOE Admin Portal uses for its own "Intensive"-prefixed templates.
+    // Was a templateName-prefix range query ("Academy" <= templateName < "Academz"), which
+    // relied on every Academy template being named with an "Academy" prefix. The Interview
+    // Coordinator App team added a proper programName field per our request (2026-08-31) —
+    // exact match on "Academy" pulls every template under that program (Bucket A/B/C,
+    // Frontend Development, Programming with Problem Solving (DSA), and anything added
+    // later) with nothing to remember to name a certain way.
     const snap = await db
       .collection("interviews")
-      .where("templateName", ">=", "Academy")
-      .where("templateName", "<", "Academz")
+      .where("programName", "==", "Academy")
       .get();
 
     const interviews = snap.docs.map((d) => {
@@ -75,6 +77,7 @@ export default async function handler(req, res) {
         // Added by the Interview Coordinator App team per our request — the interviewer's
         // display name, replacing email as what's shown in the Name of the Panelist column.
         interviewerName: r.interviewerName || "",
+        programName: r.programName || "",
         templateName: r.templateName || "",
         round: r.round || "",
         scheduledDate: r.scheduledDate || "",
