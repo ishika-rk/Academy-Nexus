@@ -5014,13 +5014,24 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
 // Only fields common to every round (candidate/schedule/panelist info, overall score, remarks,
 // final status) are filled in from the synced data.
 
-// templateName follows "Academy Bucket {A|B|C} TR{1|2}" (Bucket C's is bare "Academy Bucket C
-// TR", no digit, since it has no TR1/TR2 split) — confirmed against real synced docs 2026-08-12.
-// Previously every synced interview was hardcoded into the Bucket A / TR1 slot regardless of
-// which bucket/round it actually belonged to, so Bucket B and C data (the only buckets the
-// Interview Coordinator App had at the time) landed in a table with the wrong column schema.
+// Bucket A/B/C templates follow "Academy Bucket {A|B|C} TR{1|2}" (Bucket C's is bare "Academy
+// Bucket C TR", no digit, since it has no TR1/TR2 split) — confirmed against real synced docs
+// 2026-08-12. Previously every synced interview was hardcoded into the Bucket A / TR1 slot
+// regardless of which bucket/round it actually belonged to, so Bucket B and C data (the only
+// buckets the Interview Coordinator App had at the time) landed in a table with the wrong
+// column schema.
+//
+// Frontend Development and DSA are NOT part of that "Bucket X" naming convention — per the
+// Interview Coordinator App team, those are standalone templates whose name IS the full
+// templateName value (confirmed 2026-08-31), matched directly rather than via the regex below.
+const DIRECT_TEMPLATE_SLOTS = {
+  "Frontend Development": "D:",
+  "Programming with Problem Solving (DSA)": "E:",
+};
 function parseAcademySlot(templateName) {
-  const m = /^Academy Bucket ([ABC])(?:\s+TR(\d)?)?\s*$/i.exec((templateName || "").trim());
+  const name = (templateName || "").trim();
+  if (DIRECT_TEMPLATE_SLOTS[name]) return DIRECT_TEMPLATE_SLOTS[name];
+  const m = /^Academy Bucket ([ABC])(?:\s+TR(\d)?)?\s*$/i.exec(name);
   if (!m) return null;
   const bucket = m[1].toUpperCase();
   const subTab = bucket === "C" ? "" : (m[2] ? `TR${m[2]}` : "");
@@ -5144,6 +5155,19 @@ function bucketBTR2ClearanceStatus(iv) {
   return Number.isFinite(score) && score >= 7 ? "Cleared" : "Not Cleared";
 }
 
+// Frontend Development / DSA's Clearance Status: unlike Buckets B/C, these don't have a
+// confirmed Final Score scale or pass/fail cutoff yet, so this only relabels an explicit
+// Shortlisted/Rejected outcome from the Interview App (same wording as the other buckets) —
+// it does NOT fall back to a score-based cutoff. A completed interview without an explicit
+// outcome shows the raw outcome/"Completed" instead of guessing Cleared/Not Cleared.
+function academyOutcomeStatus(iv) {
+  if (iv.status !== "completed") return iv.status || "";
+  const outcome = (iv.outcome || "").trim();
+  if (outcome === "Shortlisted") return "Cleared";
+  if (outcome === "Rejected") return "Not Cleared";
+  return outcome || "Completed";
+}
+
 function titleCaseKey(key) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -5249,6 +5273,30 @@ const ACADEMY_ROW_BUILDERS = {
     _integrityDetails: iv.domains?.integrity || null,
     status: bucketCClearanceStatus(iv),
   }, iv, BUCKET_C_COLUMNS),
+  // Rubric rating/remarks columns use the same generic domain-name/label-derivation as every
+  // other bucket (see fillRubricColumns) — best-effort until checked against a real completed
+  // Frontend Development submission, same as B/C were before their overrides were confirmed.
+  // A wrong/unconfirmed field key just renders "—" (see fillRubricColumns' round2(undefined)),
+  // it won't show a fabricated number.
+  "D:": (iv) => fillRubricColumns({
+    ...academyCommonFields(iv),
+    overallRemarks: iv.remarks || "",
+    finalScore: round2(iv.finalVerdict ?? ""),
+    interviewIntegrityScore: integrityScore(iv),
+    _integrityDetails: iv.domains?.integrity || null,
+    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+    status: academyOutcomeStatus(iv),
+  }, iv, FRONTEND_DEV_COLUMNS),
+  // Same best-effort rubric mapping as "D:" above — unconfirmed against real DSA data yet.
+  "E:": (iv) => fillRubricColumns({
+    ...academyCommonFields(iv),
+    overallRemarks: iv.remarks || "",
+    finalScore: round2(iv.finalVerdict ?? ""),
+    interviewIntegrityScore: integrityScore(iv),
+    _integrityDetails: iv.domains?.integrity || null,
+    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+    status: academyOutcomeStatus(iv),
+  }, iv, DSA_COLUMNS),
 };
 
 function InterviewsPage() {
