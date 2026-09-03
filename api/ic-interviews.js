@@ -34,6 +34,13 @@ const SYNC_COOLDOWN_MS = 2 * 60 * 1000;
 // no way to detect that from a stream of updates), so a full resync still runs at least once a
 // day to self-heal from that and from any other drift, bounding the staleness that gap can cause.
 const FULL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// 3. Quota backoff: if a sync fails because their Firestore quota is already exhausted, the
+// normal 2-minute cooldown would let every retry (ours or another teammate's) throw another
+// failed request at their project while it's already over budget. Back off much harder in that
+// specific case — Firestore free-tier quotas commonly reset on a ~daily cycle, so 30 minutes
+// isn't meant to wait it out exactly, just to stop us from hammering it while it's down and
+// recover automatically instead of relying on someone remembering not to click "Sync Now".
+const QUOTA_BACKOFF_MS = 30 * 60 * 1000;
 
 function maxIso(a, b) {
   if (!a) return b;
@@ -80,10 +87,13 @@ export default async function handler(req, res) {
   try {
     const metaSnap = await syncMetaRef.get();
     const meta = metaSnap.data() || {};
-    const elapsed = meta.lastSyncAt ? Date.now() - new Date(meta.lastSyncAt).getTime() : Infinity;
-    if (elapsed < SYNC_COOLDOWN_MS) {
-      const waitSec = Math.ceil((SYNC_COOLDOWN_MS - elapsed) / 1000);
-      return res.status(429).json({ ok: false, error: `Synced recently — try again in ${waitSec}s.` });
+    const now = Date.now();
+    const elapsed = meta.lastSyncAt ? now - new Date(meta.lastSyncAt).getTime() : Infinity;
+    const blockedUntil = meta.blockedUntil ? new Date(meta.blockedUntil).getTime() : 0;
+    if (elapsed < SYNC_COOLDOWN_MS || now < blockedUntil) {
+      const waitSec = Math.ceil(Math.max(SYNC_COOLDOWN_MS - elapsed, blockedUntil - now) / 1000);
+      const reason = now < blockedUntil ? "Their Firestore quota was exhausted on the last attempt" : "Synced recently";
+      return res.status(429).json({ ok: false, error: `${reason} — try again in ${waitSec}s.` });
     }
     updatedAtWatermark = meta.updatedAtWatermark || null;
     const sinceFullSync = meta.lastFullSyncAt ? Date.now() - new Date(meta.lastFullSyncAt).getTime() : Infinity;
@@ -196,8 +206,12 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("ic-interviews error:", err);
     const isQuotaError = /RESOURCE_EXHAUSTED|Quota exceeded/i.test(err.message || "");
+    if (isQuotaError) {
+      const blockedUntil = new Date(Date.now() + QUOTA_BACKOFF_MS).toISOString();
+      await syncMetaRef.set({ blockedUntil }, { merge: true }).catch((e) => console.error("ic-interviews blockedUntil write error:", e));
+    }
     const error = isQuotaError
-      ? "Firestore quota/rate limit hit — wait a few minutes and try again."
+      ? "Their Firestore quota is exhausted — sync paused for 30 minutes to avoid piling on."
       : "Failed to sync interviews";
     return res.status(500).json({ ok: false, error });
   }
