@@ -18,14 +18,28 @@ import { requireUser } from "./_lib/auth.js";
 
 export const config = { maxDuration: 30 };
 
-// Every sync fully re-reads the whole Academy-scoped collection on the Interview Coordinator
-// App's side (no incremental filter is possible yet — see the comment on the query below), so
-// that team's read quota burns in proportion to how often "Sync Now" gets clicked. This cooldown
-// caps the worst case (repeated/accidental clicks, multiple people syncing back to back) without
-// needing any change on their end. 2 minutes chosen since push (api/interview-feedback.js)
-// already covers near-real-time updates — this pull is just a backfill safety net, not the
-// primary data path, so it doesn't need to run often.
+// Sync reads the Interview Coordinator App's `interviews` collection, which burns their read
+// quota — see the two mitigations below.
+//
+// 1. Cooldown: caps how often a sync can run at all, regardless of how many people click "Sync
+// Now" or how often. Push (api/interview-feedback.js) already covers near-real-time updates, so
+// this pull is just a backfill safety net and doesn't need to run often.
 const SYNC_COOLDOWN_MS = 2 * 60 * 1000;
+// 2. Incremental query: once a watermark exists, only docs updated at/after it are read instead
+// of the whole collection (see the query below) — confirmed safe with the Interview Coordinator
+// App team, 2026-09-03: `updatedAt` is always a `new Date().toISOString()` string on their side
+// (never a Firestore Timestamp), so a string range filter matches their stored type, and they've
+// added the (programName ASC, updatedAt ASC) composite index this needs. Incremental sync can't
+// see docs deleted on their side (a deleted doc just stops appearing in query results — there's
+// no way to detect that from a stream of updates), so a full resync still runs at least once a
+// day to self-heal from that and from any other drift, bounding the staleness that gap can cause.
+const FULL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function maxIso(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return a > b ? a : b;
+}
 
 let icDb = null;
 async function getIcDb() {
@@ -60,15 +74,20 @@ export default async function handler(req, res) {
   }
 
   const syncMetaRef = adminDb.collection("_meta").doc("icInterviewsSync");
+  let updatedAtWatermark = null;
+  let needsFullSync = true;
 
   try {
     const metaSnap = await syncMetaRef.get();
-    const lastSyncAt = metaSnap.data()?.lastSyncAt;
-    const elapsed = lastSyncAt ? Date.now() - new Date(lastSyncAt).getTime() : Infinity;
+    const meta = metaSnap.data() || {};
+    const elapsed = meta.lastSyncAt ? Date.now() - new Date(meta.lastSyncAt).getTime() : Infinity;
     if (elapsed < SYNC_COOLDOWN_MS) {
       const waitSec = Math.ceil((SYNC_COOLDOWN_MS - elapsed) / 1000);
       return res.status(429).json({ ok: false, error: `Synced recently — try again in ${waitSec}s.` });
     }
+    updatedAtWatermark = meta.updatedAtWatermark || null;
+    const sinceFullSync = meta.lastFullSyncAt ? Date.now() - new Date(meta.lastFullSyncAt).getTime() : Infinity;
+    needsFullSync = !updatedAtWatermark || sinceFullSync >= FULL_SYNC_INTERVAL_MS;
     // Set before the read (not after) so two requests arriving close together both see the
     // cooldown, rather than both slipping through before either finishes.
     await syncMetaRef.set({ lastSyncAt: new Date().toISOString() }, { merge: true });
@@ -85,10 +104,23 @@ export default async function handler(req, res) {
     // exact match on "Academy" pulls every template under that program (Bucket A/B/C,
     // Frontend Development, Programming with Problem Solving (DSA), and anything added
     // later) with nothing to remember to name a certain way.
-    const snap = await db
-      .collection("interviews")
-      .where("programName", "==", "Academy")
-      .get();
+    let queryRef = db.collection("interviews").where("programName", "==", "Academy");
+    // >= (not >) so a doc sharing the exact same updatedAt as the watermark — e.g. several docs
+    // stamped by the same batch write on their side — is never silently skipped. Costs at most
+    // one redundant doc read per sync (the one that previously set the watermark).
+    if (!needsFullSync) queryRef = queryRef.where("updatedAt", ">=", updatedAtWatermark);
+    let snap;
+    try {
+      snap = await queryRef.get();
+    } catch (err) {
+      // The incremental query needs a (programName ASC, updatedAt ASC) composite index on their
+      // side — if it isn't live yet (or was removed), Firestore rejects the query outright rather
+      // than just running slow. Fall back to a full read instead of hard-failing every sync until
+      // that index exists, so deploy order between the two sides doesn't matter.
+      if (needsFullSync || !/requires an index|FAILED_PRECONDITION/i.test(err.message || "")) throw err;
+      needsFullSync = true;
+      snap = await db.collection("interviews").where("programName", "==", "Academy").get();
+    }
 
     const interviews = snap.docs.map((d) => {
       const r = d.data();
@@ -147,7 +179,20 @@ export default async function handler(req, res) {
     }
     await batch.commit();
 
-    return res.status(200).json({ ok: true, count: interviews.length, syncedAt });
+    // Only advance the watermark (and, on a full sync, the full-sync clock) after the batch
+    // above has actually committed — if the sync fails partway, the next attempt should still
+    // see the old watermark and re-cover the same range rather than silently skipping it.
+    const newWatermark = interviews.reduce((max, iv) => maxIso(max, iv.updatedAt), updatedAtWatermark);
+    const metaUpdate = { updatedAtWatermark: newWatermark };
+    if (needsFullSync) metaUpdate.lastFullSyncAt = syncedAt;
+    await syncMetaRef.set(metaUpdate, { merge: true });
+
+    return res.status(200).json({
+      ok: true,
+      count: interviews.length,
+      syncedAt,
+      mode: needsFullSync ? "full" : "incremental",
+    });
   } catch (err) {
     console.error("ic-interviews error:", err);
     const isQuotaError = /RESOURCE_EXHAUSTED|Quota exceeded/i.test(err.message || "");
