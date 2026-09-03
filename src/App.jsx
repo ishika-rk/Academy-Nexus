@@ -5332,6 +5332,9 @@ function InterviewsPage() {
         headers: { Authorization: `Bearer ${idToken}` },
       });
       const data = await res.json();
+      // 429 = server-enforced cooldown (see SYNC_COOLDOWN_MS in api/ic-interviews.js), added
+      // to cap how often the full Academy-scoped collection gets re-read on the Interview
+      // Coordinator App's side. data.error already carries a user-facing "try again in Ns" message.
       if (!res.ok || !data.ok) throw new Error(data.error || "Sync failed");
     } catch (err) {
       setSyncError(err.message || "Sync failed");

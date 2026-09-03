@@ -18,6 +18,15 @@ import { requireUser } from "./_lib/auth.js";
 
 export const config = { maxDuration: 30 };
 
+// Every sync fully re-reads the whole Academy-scoped collection on the Interview Coordinator
+// App's side (no incremental filter is possible yet — see the comment on the query below), so
+// that team's read quota burns in proportion to how often "Sync Now" gets clicked. This cooldown
+// caps the worst case (repeated/accidental clicks, multiple people syncing back to back) without
+// needing any change on their end. 2 minutes chosen since push (api/interview-feedback.js)
+// already covers near-real-time updates — this pull is just a backfill safety net, not the
+// primary data path, so it doesn't need to run often.
+const SYNC_COOLDOWN_MS = 2 * 60 * 1000;
+
 let icDb = null;
 async function getIcDb() {
   if (icDb) return icDb;
@@ -48,6 +57,24 @@ export default async function handler(req, res) {
 
   if (!process.env.IC_SA_B64) {
     return res.status(503).json({ ok: false, error: "IC_SA_B64 env var not set in Vercel." });
+  }
+
+  const syncMetaRef = adminDb.collection("_meta").doc("icInterviewsSync");
+
+  try {
+    const metaSnap = await syncMetaRef.get();
+    const lastSyncAt = metaSnap.data()?.lastSyncAt;
+    const elapsed = lastSyncAt ? Date.now() - new Date(lastSyncAt).getTime() : Infinity;
+    if (elapsed < SYNC_COOLDOWN_MS) {
+      const waitSec = Math.ceil((SYNC_COOLDOWN_MS - elapsed) / 1000);
+      return res.status(429).json({ ok: false, error: `Synced recently — try again in ${waitSec}s.` });
+    }
+    // Set before the read (not after) so two requests arriving close together both see the
+    // cooldown, rather than both slipping through before either finishes.
+    await syncMetaRef.set({ lastSyncAt: new Date().toISOString() }, { merge: true });
+  } catch (err) {
+    console.error("ic-interviews cooldown check error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to sync interviews" });
   }
 
   try {
