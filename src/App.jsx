@@ -4942,7 +4942,13 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  const clickable = hasValue || !!details || !!descriptor;
+                  // TEMPORARY debug aid, 2026-09-12: clicking Candidate ID on a Frontend
+                  // Development row dumps the raw `domains` payload so we can confirm the
+                  // real domain/field keys the Interview App uses for that template, the same
+                  // way Bucket B/TR2's RUBRIC_FIELD_KEY_OVERRIDES were confirmed. Remove once
+                  // Frontend Development's mapping is confirmed (see fillRubricColumns).
+                  const rawDomainsDebug = col.key === "candidateId" ? row._rawDomainsDebug : null;
+                  const clickable = hasValue || !!details || !!descriptor || !!rawDomainsDebug;
                   return (
                     <td
                       key={col.key}
@@ -4951,6 +4957,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
+                        : rawDomainsDebug ? { label: "Candidate ID — DEBUG (raw domains payload)", value: JSON.stringify(rawDomainsDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -5280,6 +5287,9 @@ const ACADEMY_ROW_BUILDERS = {
   // it won't show a fabricated number.
   "FRONTEND:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
+    // TEMPORARY debug field, 2026-09-12 — see rawDomainsDebug in InterviewDataTable. Remove
+    // once Frontend Development's rubric field mapping is confirmed.
+    _rawDomainsDebug: iv.domains || null,
     overallRemarks: iv.remarks || "",
     finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
