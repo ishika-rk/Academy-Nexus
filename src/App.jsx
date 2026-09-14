@@ -5445,6 +5445,23 @@ const DSA_REMARKS_FIELD_KEYS = {
   dsaTheoryRemarks: "domain_remarks",
   // communicationRemarks intentionally absent — no known raw field to read (see comment above).
 };
+// DSA's Levels tier, rule given 2026-09-15:
+//   L4        p1Approach>=4 AND p1Code>=4 AND p2Approach>=4 AND p2Code>=4 AND dsaTheory>=4
+//   L3   else p2Code>=3 AND (75% * avg(p2Approach, p2Code) + 25% * dsaTheory) >= 3
+//   L2   else p1Code>=3 AND (75% * avg(p1Approach, p1Code) + 25% * dsaTheory) >= 3
+//   Below L2  otherwise
+// Blank if any of the five domain ratings is missing — checked explicitly against ""/null/
+// undefined (not just falsy) since 0 is a real, valid rating.
+function dsaLevel(row) {
+  const vals = [row.problem1ApproachRating, row.problem1CodeRating, row.problem2ApproachRating, row.problem2CodeRating, row.dsaTheoryRating];
+  if (vals.some(v => v === "" || v === null || v === undefined)) return "";
+  const [p1a, p1c, p2a, p2c, theory] = vals.map(Number);
+  if (p1a >= 4 && p1c >= 4 && p2a >= 4 && p2c >= 4 && theory >= 4) return "L4";
+  if (p2c >= 3 && 0.75 * ((p2a + p2c) / 2) + 0.25 * theory >= 3) return "L3";
+  if (p1c >= 3 && 0.75 * ((p1a + p1c) / 2) + 0.25 * theory >= 3) return "L2";
+  return "Below L2";
+}
+
 function fillDsaRubricColumns(row, iv) {
   const domains = iv.domains || {};
   for (const col of DSA_COLUMNS) {
@@ -5463,6 +5480,7 @@ function fillDsaRubricColumns(row, iv) {
       row._domainDescriptors[col.key] = descriptor;
     }
   }
+  row.levels = dsaLevel(row);
   return row;
 }
 
@@ -5533,16 +5551,15 @@ const ACADEMY_ROW_BUILDERS = {
     return row;
   },
   // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-15 —
-  // see fillDsaRubricColumns for what's different about this bucket's domain shape.
-  // Levels (frontendDevLevel) isn't computed here at all — that rule is defined in terms of
-  // htmlCss/javascript/react/machineCoding, columns DSA doesn't have, so `levels` stays unset
-  // and renders blank. Revisit if DSA gets its own Levels criteria.
+  // see fillDsaRubricColumns for what's different about this bucket's domain shape. Levels
+  // (dsaLevel) uses its own DSA-specific criteria given 2026-09-15 — NOT the same rule as
+  // Frontend Development's frontendDevLevel, don't assume the two stay in sync.
   "DSA:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
     const common = academyCommonFields(iv);
-    // See the matching comment in "FRONTEND:" — don't compute Verdict Band for a row flagged
-    // _statusDataMismatch.
-    return fillDsaRubricColumns({
+    // See the matching comment in "FRONTEND:" — don't compute Verdict Band or Levels for a row
+    // flagged _statusDataMismatch.
+    const row = fillDsaRubricColumns({
       ...common,
       // Unlike the flat feedback.comments field (iv.remarks), which came back empty on a real
       // completed submission that DID have an overall comment — that text sits instead in
@@ -5555,6 +5572,8 @@ const ACADEMY_ROW_BUILDERS = {
       verdict: common._statusDataMismatch ? "" : verdictBand(finalScore),
       status: academyOutcomeStatus(iv),
     }, iv);
+    if (common._statusDataMismatch) row.levels = "";
+    return row;
   },
 };
 
