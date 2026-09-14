@@ -4943,6 +4943,15 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
                   const clickable = hasValue || !!details || !!descriptor;
+                  // Data-mismatch warning: confirmed 2026-09-14 (Hitheesha, Frontend Development)
+                  // that the Interview Coordinator App can leave a doc's feedbackSubmittedAt/
+                  // domains/finalVerdict populated from an earlier attempt after the doc gets
+                  // reused for a reschedule and the status later flips to something other than
+                  // "completed" (e.g. no_show) — the scores/remarks shown may belong to that
+                  // earlier attempt, not the current status. Flagged rather than hidden, since the
+                  // data is often real and useful, just possibly mismatched to the wrong attempt.
+                  // Shown once per row on the status/finalStatus (last) column.
+                  const showMismatchWarning = (col.key === "status" || col.key === "finalStatus") && row._statusDataMismatch;
                   return (
                     <td
                       key={col.key}
@@ -4954,6 +4963,19 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                         : { label: col.label, value }
                       ) : undefined}
                     >
+                      {showMismatchWarning && (
+                        <span
+                          title="Status/data mismatch — click for details"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpanded({
+                              label: "Data Mismatch Warning",
+                              value: `This interview is marked "${row[col.key]}" but feedback was submitted on ${row._feedbackSubmittedAt}.\n\nThis looks like a data issue on the Interview Coordinator App's side — most likely this doc was reused for a reschedule and the earlier attempt's scores/remarks were never cleared when the status changed. The rubric data shown for this row may belong to that earlier attempt rather than the current one. Verify with the Interview Coordinator App team before trusting it.`,
+                            });
+                          }}
+                          style={{ marginRight: 6, cursor: "pointer" }}
+                        >⚠️</span>
+                      )}
                       {hasValue ? value : "—"}
                     </td>
                   );
@@ -5055,6 +5077,11 @@ function academyCommonFields(iv) {
     // 2026-08-14, per our request (meetLink, the join link, was wrongly used here before).
     recordingLink: iv.meetingRecordingUrl || "",
     transcriptLink: iv.transcriptUrl || "",
+    // Flags a row whose feedback was submitted (real scores/remarks exist) but whose current
+    // status isn't "completed" — see the showMismatchWarning comment in InterviewDataTable for
+    // how this was diagnosed (Hitheesha, Frontend Development, 2026-09-14).
+    _statusDataMismatch: !!iv.feedbackSubmittedAt && iv.status !== "completed",
+    _feedbackSubmittedAt: iv.feedbackSubmittedAt || "",
   };
 }
 
@@ -5346,7 +5373,12 @@ const ACADEMY_ROW_BUILDERS = {
   // see fillFrontendDevRubricColumns for what's different about this bucket's domain shape.
   "FRONTEND:": (iv) => fillFrontendDevRubricColumns({
     ...academyCommonFields(iv),
-    overallRemarks: iv.remarks || "",
+    // Unlike every other bucket, Frontend Development's overall comment isn't in the flat
+    // feedback.comments field (iv.remarks) — confirmed 2026-09-14 it comes back empty there for
+    // a real completed submission that DID have an overall comment, sitting instead in
+    // domains.overall_feedback.domain_remarks. iv.remarks kept as a fallback in case some
+    // submissions do populate the flat field.
+    overallRemarks: iv.domains?.overall_feedback?.domain_remarks || iv.remarks || "",
     finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
