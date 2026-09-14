@@ -4942,13 +4942,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  // TEMPORARY debug aid, 2026-09-12: clicking Candidate ID on a Frontend
-                  // Development row dumps the raw `domains` payload so we can confirm the
-                  // real domain/field keys the Interview App uses for that template, the same
-                  // way Bucket B/TR2's RUBRIC_FIELD_KEY_OVERRIDES were confirmed. Remove once
-                  // Frontend Development's mapping is confirmed (see fillRubricColumns).
-                  const rawDomainsDebug = col.key === "candidateId" ? row._rawDomainsDebug : null;
-                  const clickable = hasValue || !!details || !!descriptor || !!rawDomainsDebug;
+                  const clickable = hasValue || !!details || !!descriptor;
                   return (
                     <td
                       key={col.key}
@@ -4957,7 +4951,6 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
-                        : rawDomainsDebug ? { label: "Candidate ID — DEBUG (raw domains payload)", value: JSON.stringify(rawDomainsDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -5240,6 +5233,75 @@ function fillRubricColumns(row, iv, columns) {
   return row;
 }
 
+// Frontend Development's domain shape, confirmed against a real completed submission,
+// 2026-09-14 (via the temporary rawDomainsDebug hook on Candidate ID — see InterviewDataTable),
+// turned out different enough from every other bucket that it needs its own row-filler rather
+// than reusing fillRubricColumns:
+//  - Domain keys DO match plain label-derivation (project_deep_dive, html_css, javascript,
+//    react, machine_coding, debug) — that part of the generic approach held.
+//  - The individual rating field inside cards[0] is an OPAQUE form-builder id with no semantic
+//    relationship to the column label at all (not even abbreviated, unlike Bucket B/TR2's
+//    overrides) — e.g. project_deep_dive's rating lives at cards[0].field_3eoh7, debug's at
+//    cards[0].question. Since every domain here holds exactly one card/one field (no multi-field
+//    averaging like Bucket B/TR1's Part 2), domain.domain_rating always equals that single
+//    field's value anyway, so the rating itself is read from domain_rating directly — the opaque
+//    field id below is only needed to look up that field's descriptor.
+//  - Remarks are the real surprise: each domain's remarks text is a field living directly ON the
+//    domain object (a sibling of `cards`/`domain_rating`), NOT nested inside cards[0] the way
+//    fillRubricColumns assumes for every other bucket's remarks-adjacent fields. The key name
+//    isn't consistent either — sometimes a semantic "domain_remarks" (debug), sometimes semantic
+//    with a random suffix (react: domain_remarks_7seab, machineCoding: domain_remarks_wz845),
+//    sometimes fully opaque (project_deep_dive: field_xgu0v, html_css: field_l8dsp, javascript:
+//    field_p1aqs).
+// These are field-builder ids, assigned once when the template field was created and stable
+// across submissions of the same template (same reasoning already relied on for
+// INTEGRITY_CHECK_LABELS' field_gby0a) — but confirmed against only ONE submission so far.
+// Re-check against a second completed Frontend Development interview if one becomes available.
+const FRONTEND_DEV_DOMAIN_KEYS = {
+  projectDeepDive: "project_deep_dive", projectRemarks: "project_deep_dive",
+  htmlCss: "html_css", htmlCssRemarks: "html_css",
+  javascript: "javascript", javascriptRemarks: "javascript",
+  react: "react", reactRemarks: "react",
+  machineCoding: "machine_coding", machineCodingRemarks: "machine_coding",
+  debug: "debug", debugRemarks: "debug",
+};
+const FRONTEND_DEV_RATING_FIELD_KEYS = {
+  projectDeepDive: "field_3eoh7",
+  htmlCss: "field_dbwbp",
+  javascript: "field_kxtlr",
+  react: "field_qva7z",
+  machineCoding: "field_7ujo7",
+  debug: "question",
+};
+const FRONTEND_DEV_REMARKS_FIELD_KEYS = {
+  projectRemarks: "field_xgu0v",
+  htmlCssRemarks: "field_l8dsp",
+  javascriptRemarks: "field_p1aqs",
+  reactRemarks: "domain_remarks_7seab",
+  machineCodingRemarks: "domain_remarks_wz845",
+  debugRemarks: "domain_remarks",
+};
+function fillFrontendDevRubricColumns(row, iv) {
+  const domains = iv.domains || {};
+  for (const col of FRONTEND_DEV_COLUMNS) {
+    if (!col.group || row[col.key] !== undefined) continue;
+    const domain = domains[FRONTEND_DEV_DOMAIN_KEYS[col.key]] || {};
+    const remarksFieldKey = FRONTEND_DEV_REMARKS_FIELD_KEYS[col.key];
+    if (remarksFieldKey) {
+      row[col.key] = domain[remarksFieldKey] || "";
+      continue;
+    }
+    row[col.key] = round2(domain.domain_rating ?? "");
+    const fieldKey = FRONTEND_DEV_RATING_FIELD_KEYS[col.key];
+    const descriptor = domain.descriptors?.cards?.[0]?.[fieldKey];
+    if (descriptor) {
+      row._domainDescriptors = row._domainDescriptors || {};
+      row._domainDescriptors[col.key] = descriptor;
+    }
+  }
+  return row;
+}
+
 const ACADEMY_ROW_BUILDERS = {
   // Bucket A currently has no live data from the Interview Coordinator App and an unconfirmed
   // rubric naming convention (its groups don't follow the "Part N: ..." pattern used elsewhere) —
@@ -5280,23 +5342,17 @@ const ACADEMY_ROW_BUILDERS = {
     _integrityDetails: iv.domains?.integrity || null,
     status: bucketCClearanceStatus(iv),
   }, iv, BUCKET_C_COLUMNS),
-  // Rubric rating/remarks columns use the same generic domain-name/label-derivation as every
-  // other bucket (see fillRubricColumns) — best-effort until checked against a real completed
-  // Frontend Development submission, same as B/C were before their overrides were confirmed.
-  // A wrong/unconfirmed field key just renders "—" (see fillRubricColumns' round2(undefined)),
-  // it won't show a fabricated number.
-  "FRONTEND:": (iv) => fillRubricColumns({
+  // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-14 —
+  // see fillFrontendDevRubricColumns for what's different about this bucket's domain shape.
+  "FRONTEND:": (iv) => fillFrontendDevRubricColumns({
     ...academyCommonFields(iv),
-    // TEMPORARY debug field, 2026-09-12 — see rawDomainsDebug in InterviewDataTable. Remove
-    // once Frontend Development's rubric field mapping is confirmed.
-    _rawDomainsDebug: iv.domains || null,
     overallRemarks: iv.remarks || "",
     finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
     verdict: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
     status: academyOutcomeStatus(iv),
-  }, iv, FRONTEND_DEV_COLUMNS),
+  }, iv),
   // Same best-effort rubric mapping as "FRONTEND:" above — unconfirmed against real DSA data yet.
   "DSA:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
