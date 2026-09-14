@@ -5238,17 +5238,17 @@ function bucketBTR2ClearanceStatus(iv) {
   return Number.isFinite(score) && score >= 7 ? "Cleared" : "Not Cleared";
 }
 
-// Frontend Development / DSA's Clearance Status: unlike Buckets B/C, these don't have a
-// confirmed Final Score scale or pass/fail cutoff yet, so this only relabels an explicit
-// Shortlisted/Rejected outcome from the Interview App (same wording as the other buckets) —
-// it does NOT fall back to a score-based cutoff. A completed interview without an explicit
-// outcome shows the raw outcome/"Completed" instead of guessing Cleared/Not Cleared.
-function academyOutcomeStatus(iv) {
+// Frontend Development / DSA's Clearance Status, rule given 2026-09-15: for a completed
+// interview, Cleared/Not Cleared is derived from Verdict Band — Strong Hire/Medium Hire ->
+// Cleared, Low Hire/Reject -> Not Cleared — rather than the Interview App's own
+// overallRecommendation outcome (the earlier Shortlisted/Rejected relabeling this replaced).
+// Non-completed statuses still pass through unchanged. A completed interview with no band yet
+// (blank Final Score) falls back to "Completed" rather than guessing Cleared/Not Cleared.
+function academyOutcomeStatus(iv, band) {
   if (iv.status !== "completed") return iv.status || "";
-  const outcome = (iv.outcome || "").trim();
-  if (outcome === "Shortlisted") return "Cleared";
-  if (outcome === "Rejected") return "Not Cleared";
-  return outcome || "Completed";
+  if (band === "Strong Hire" || band === "Medium Hire") return "Cleared";
+  if (band === "Low Hire" || band === "Reject") return "Not Cleared";
+  return "Completed";
 }
 
 function titleCaseKey(key) {
@@ -5528,6 +5528,7 @@ const ACADEMY_ROW_BUILDERS = {
   // see fillFrontendDevRubricColumns for what's different about this bucket's domain shape.
   "FRONTEND:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
+    const band = verdictBand(finalScore);
     const common = academyCommonFields(iv);
     // Verdict Band and Levels are both trust-sensitive derived judgments (hire recommendation /
     // skill tier) — for a row flagged _statusDataMismatch (feedback submitted but status isn't
@@ -5544,8 +5545,8 @@ const ACADEMY_ROW_BUILDERS = {
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
-      verdict: common._statusDataMismatch ? "" : verdictBand(finalScore),
-      status: academyOutcomeStatus(iv),
+      verdict: common._statusDataMismatch ? "" : band,
+      status: academyOutcomeStatus(iv, band),
     }, iv);
     if (common._statusDataMismatch) row.levels = "";
     return row;
@@ -5556,6 +5557,7 @@ const ACADEMY_ROW_BUILDERS = {
   // Frontend Development's frontendDevLevel, don't assume the two stay in sync.
   "DSA:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
+    const band = verdictBand(finalScore);
     const common = academyCommonFields(iv);
     // See the matching comment in "FRONTEND:" — don't compute Verdict Band or Levels for a row
     // flagged _statusDataMismatch.
@@ -5569,8 +5571,8 @@ const ACADEMY_ROW_BUILDERS = {
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
-      verdict: common._statusDataMismatch ? "" : verdictBand(finalScore),
-      status: academyOutcomeStatus(iv),
+      verdict: common._statusDataMismatch ? "" : band,
+      status: academyOutcomeStatus(iv, band),
     }, iv);
     if (common._statusDataMismatch) row.levels = "";
     return row;
