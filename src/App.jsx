@@ -4854,24 +4854,28 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
   const [expanded, setExpanded] = useState(null); // { label, value } | null
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState(null); // null = all; Set = only these values
+  const [columnFilters, setColumnFilters] = useState({}); // { [colKey]: Set|null }; null/absent = all
 
-  // "Status"/"Final Status"/"Clearance Status" columns all use one of these two keys across
-  // every bucket's column set — whichever is present gets the Google-Sheets-style filter.
-  const statusCol = columns.find(c => c.key === "status" || c.key === "finalStatus");
-  const statusOptions = statusCol
-    ? [...new Set(rows.map(r => r[statusCol.key]).filter(v => v !== undefined && v !== null && v !== ""))].sort()
-    : [];
+  // Status/Final Status/Clearance Status, Verdict Band, and Levels all get the same
+  // Google-Sheets-style checkbox filter — whichever of these keys are present in this bucket's
+  // column set (not every bucket has all of them, e.g. only Frontend Development has Levels).
+  const FILTERABLE_KEYS = ["status", "finalStatus", "verdict", "levels"];
+  const filterableCols = columns.filter(c => FILTERABLE_KEYS.includes(c.key));
+  const filterOptionsByKey = Object.fromEntries(filterableCols.map(c => [
+    c.key,
+    [...new Set(rows.map(r => r[c.key]).filter(v => v !== undefined && v !== null && v !== ""))].sort(),
+  ]));
 
   const searchLower = search.trim().toLowerCase();
   const searchedRows = searchLower
     ? rows.filter(r => columns.some(c => String(r[c.key] ?? "").toLowerCase().includes(searchLower)))
     : rows;
-  const filteredRows = statusCol && statusFilter
-    ? searchedRows.filter(r => statusFilter.has(r[statusCol.key]))
-    : searchedRows;
+  const filteredRows = filterableCols.reduce((acc, c) => {
+    const selected = columnFilters[c.key];
+    return selected ? acc.filter(r => selected.has(r[c.key])) : acc;
+  }, searchedRows);
 
-  useEffect(() => { setPage(1); }, [search, statusFilter]);
+  useEffect(() => { setPage(1); }, [search, columnFilters]);
 
   const hasGroups = columns.some(c => c.group);
   const segments = hasGroups ? buildGroupedHeaderSegments(columns) : null;
@@ -4882,8 +4886,16 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
   const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", border: `1px solid ${C.border}`, padding: "8px 10px", textAlign: "left", color: C.muted, whiteSpace: "normal", lineHeight: 1.4 };
   const tdBase = { border: `1px solid ${C.border}`, padding: "8px 10px", width: INTERVIEW_COL_WIDTH, minWidth: INTERVIEW_COL_WIDTH, maxWidth: INTERVIEW_COL_WIDTH, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.text };
 
-  const renderUngroupedTh = (col, rowSpan) => col.key === statusCol?.key ? (
-    <StatusFilterHeader key={col.key} label={col.label} options={statusOptions} selected={statusFilter} onChange={setStatusFilter} thStyle={{ ...thBase, background: C.surfaceAlt }} rowSpan={rowSpan} />
+  const renderUngroupedTh = (col, rowSpan) => filterableCols.some(c => c.key === col.key) ? (
+    <StatusFilterHeader
+      key={col.key}
+      label={col.label}
+      options={filterOptionsByKey[col.key]}
+      selected={columnFilters[col.key] || null}
+      onChange={(next) => setColumnFilters(f => ({ ...f, [col.key]: next }))}
+      thStyle={{ ...thBase, background: C.surfaceAlt }}
+      rowSpan={rowSpan}
+    />
   ) : (
     <th key={col.key} rowSpan={rowSpan} style={{ ...thBase, background: C.surfaceAlt }}>{col.label}</th>
   );
