@@ -5437,8 +5437,13 @@ const ACADEMY_ROW_BUILDERS = {
   // see fillFrontendDevRubricColumns for what's different about this bucket's domain shape.
   "FRONTEND:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
-    return fillFrontendDevRubricColumns({
-      ...academyCommonFields(iv),
+    const common = academyCommonFields(iv);
+    // Verdict Band and Levels are both trust-sensitive derived judgments (hire recommendation /
+    // skill tier) — for a row flagged _statusDataMismatch (feedback submitted but status isn't
+    // "completed", see academyCommonFields), don't compute either from data that may belong to a
+    // different attempt. Final Score and Clearance Status still show their raw values regardless.
+    const row = fillFrontendDevRubricColumns({
+      ...common,
       // Unlike every other bucket, Frontend Development's overall comment isn't in the flat
       // feedback.comments field (iv.remarks) — confirmed 2026-09-14 it comes back empty there for
       // a real completed submission that DID have an overall comment, sitting instead in
@@ -5448,9 +5453,11 @@ const ACADEMY_ROW_BUILDERS = {
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
-      verdict: verdictBand(finalScore),
+      verdict: common._statusDataMismatch ? "" : verdictBand(finalScore),
       status: academyOutcomeStatus(iv),
     }, iv);
+    if (common._statusDataMismatch) row.levels = "";
+    return row;
   },
   // Same best-effort rubric mapping as "FRONTEND:" above — unconfirmed against real DSA data yet.
   // Levels (frontendDevLevel) isn't computed here at all — that rule is defined in terms of
@@ -5458,13 +5465,16 @@ const ACADEMY_ROW_BUILDERS = {
   // and renders blank. Revisit if DSA gets its own Levels criteria.
   "DSA:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
+    const common = academyCommonFields(iv);
+    // See the matching comment in "FRONTEND:" — don't compute Verdict Band for a row flagged
+    // _statusDataMismatch.
     return fillRubricColumns({
-      ...academyCommonFields(iv),
+      ...common,
       overallRemarks: iv.remarks || "",
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
-      verdict: verdictBand(finalScore),
+      verdict: common._statusDataMismatch ? "" : verdictBand(finalScore),
       status: academyOutcomeStatus(iv),
     }, iv, DSA_COLUMNS);
   },
