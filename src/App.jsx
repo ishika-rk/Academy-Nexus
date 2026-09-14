@@ -4882,8 +4882,18 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
     <th key={col.key} rowSpan={rowSpan} style={{ ...thBase, background: C.surfaceAlt }}>{col.label}</th>
   );
 
+  // Rows where feedback was submitted but status isn't "completed" — see _statusDataMismatch in
+  // academyCommonFields. Surfaced here as a table-level summary (in addition to the per-row ⚠️ on
+  // Clearance Status) so it's visible without scrolling/scanning every row.
+  const mismatchNames = [...new Set(rows.filter(r => r._statusDataMismatch).map(r => r.candidateName || "Unknown"))];
+
   return (
     <>
+      {mismatchNames.length > 0 && (
+        <div style={{ marginBottom: 12, fontSize: 12, color: "#92400e", background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 7, padding: "10px 14px" }}>
+          ⚠️ {mismatchNames.length} row{mismatchNames.length > 1 ? "s" : ""} {mismatchNames.length > 1 ? "have" : "has"} a status/data mismatch: {mismatchNames.join(", ")} — see the ⚠️ on Clearance Status for details.
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <div style={{ position: "relative", flex: "0 1 280px" }}>
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.muted }}><circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.4" /><path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
@@ -5382,7 +5392,10 @@ const ACADEMY_ROW_BUILDERS = {
     finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
-    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+    // Verdict is the Interview App's own outcome recommendation — the raw interview status
+    // (no_show/pending/etc.) belongs only in Clearance Status (see academyOutcomeStatus), so
+    // Verdict stays blank rather than duplicating it there for non-completed interviews.
+    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : "",
     status: academyOutcomeStatus(iv),
   }, iv),
   // Same best-effort rubric mapping as "FRONTEND:" above — unconfirmed against real DSA data yet.
@@ -5392,7 +5405,10 @@ const ACADEMY_ROW_BUILDERS = {
     finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
-    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : (iv.status || ""),
+    // Verdict is the Interview App's own outcome recommendation — the raw interview status
+    // (no_show/pending/etc.) belongs only in Clearance Status (see academyOutcomeStatus), so
+    // Verdict stays blank rather than duplicating it there for non-completed interviews.
+    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : "",
     status: academyOutcomeStatus(iv),
   }, iv, DSA_COLUMNS),
 };
