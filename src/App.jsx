@@ -5164,6 +5164,20 @@ function scaleOutOfFiveToHundred(raw) {
   return Number.isFinite(n) ? round2(n * 20) : (raw ?? "");
 }
 
+// Frontend Development / DSA's Verdict band, matching the sheet formula given 2026-09-14:
+// =IF(AK2="","",IF(AK2>=80,"Strong Hire",IF(AK2>=65,"Medium Hire",IF(AK2>=50,"Low Hire","Reject"))))
+// AK2 there is the 0-100 Final Score (see scaleOutOfFiveToHundred) — blank input stays blank
+// rather than falling through to "Reject".
+function verdictBand(finalScore) {
+  if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
+  const n = Number(finalScore);
+  if (!Number.isFinite(n)) return "";
+  if (n >= 80) return "Strong Hire";
+  if (n >= 65) return "Medium Hire";
+  if (n >= 50) return "Low Hire";
+  return "Reject";
+}
+
 // Bucket C's clearance status: an outcome already set by the Interview App (Shortlisted/
 // Rejected) is relabeled to match our Cleared/Not Cleared wording; anything else that's
 // come back completed without an outcome is decided by our own 70%-of-10 cutoff on the
@@ -5388,36 +5402,36 @@ const ACADEMY_ROW_BUILDERS = {
   }, iv, BUCKET_C_COLUMNS),
   // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-14 —
   // see fillFrontendDevRubricColumns for what's different about this bucket's domain shape.
-  "FRONTEND:": (iv) => fillFrontendDevRubricColumns({
-    ...academyCommonFields(iv),
-    // Unlike every other bucket, Frontend Development's overall comment isn't in the flat
-    // feedback.comments field (iv.remarks) — confirmed 2026-09-14 it comes back empty there for
-    // a real completed submission that DID have an overall comment, sitting instead in
-    // domains.overall_feedback.domain_remarks. iv.remarks kept as a fallback in case some
-    // submissions do populate the flat field.
-    overallRemarks: iv.domains?.overall_feedback?.domain_remarks || iv.remarks || "",
-    finalScore: scaleOutOfFiveToHundred(iv.finalVerdict),
-    interviewIntegrityScore: integrityScore(iv),
-    _integrityDetails: iv.domains?.integrity || null,
-    // Verdict is the Interview App's own outcome recommendation — the raw interview status
-    // (no_show/pending/etc.) belongs only in Clearance Status (see academyOutcomeStatus), so
-    // Verdict stays blank rather than duplicating it there for non-completed interviews.
-    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : "",
-    status: academyOutcomeStatus(iv),
-  }, iv),
+  "FRONTEND:": (iv) => {
+    const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
+    return fillFrontendDevRubricColumns({
+      ...academyCommonFields(iv),
+      // Unlike every other bucket, Frontend Development's overall comment isn't in the flat
+      // feedback.comments field (iv.remarks) — confirmed 2026-09-14 it comes back empty there for
+      // a real completed submission that DID have an overall comment, sitting instead in
+      // domains.overall_feedback.domain_remarks. iv.remarks kept as a fallback in case some
+      // submissions do populate the flat field.
+      overallRemarks: iv.domains?.overall_feedback?.domain_remarks || iv.remarks || "",
+      finalScore,
+      interviewIntegrityScore: integrityScore(iv),
+      _integrityDetails: iv.domains?.integrity || null,
+      verdict: verdictBand(finalScore),
+      status: academyOutcomeStatus(iv),
+    }, iv);
+  },
   // Same best-effort rubric mapping as "FRONTEND:" above — unconfirmed against real DSA data yet.
-  "DSA:": (iv) => fillRubricColumns({
-    ...academyCommonFields(iv),
-    overallRemarks: iv.remarks || "",
-    finalScore: scaleOutOfFiveToHundred(iv.finalVerdict),
-    interviewIntegrityScore: integrityScore(iv),
-    _integrityDetails: iv.domains?.integrity || null,
-    // Verdict is the Interview App's own outcome recommendation — the raw interview status
-    // (no_show/pending/etc.) belongs only in Clearance Status (see academyOutcomeStatus), so
-    // Verdict stays blank rather than duplicating it there for non-completed interviews.
-    verdict: iv.status === "completed" ? (iv.outcome || "Completed") : "",
-    status: academyOutcomeStatus(iv),
-  }, iv, DSA_COLUMNS),
+  "DSA:": (iv) => {
+    const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
+    return fillRubricColumns({
+      ...academyCommonFields(iv),
+      overallRemarks: iv.remarks || "",
+      finalScore,
+      interviewIntegrityScore: integrityScore(iv),
+      _integrityDetails: iv.domains?.integrity || null,
+      verdict: verdictBand(finalScore),
+      status: academyOutcomeStatus(iv),
+    }, iv, DSA_COLUMNS);
+  },
 };
 
 function InterviewsPage() {
