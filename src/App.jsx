@@ -4970,11 +4970,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  // TEMPORARY debug aid, 2026-09-15: clicking Candidate ID dumps the raw domains
-                  // payload so DSA's rubric field mapping can be confirmed against real data, same
-                  // as was done for Frontend Development. Remove once confirmed.
-                  const rawDomainsDebug = col.key === "candidateId" ? row._rawDomainsDebug : null;
-                  const clickable = hasValue || !!details || !!descriptor || !!rawDomainsDebug;
+                  const clickable = hasValue || !!details || !!descriptor;
                   // Data-mismatch warning: confirmed 2026-09-14 (Hitheesha, Frontend Development)
                   // that the Interview Coordinator App can leave a doc's feedbackSubmittedAt/
                   // domains/finalVerdict populated from an earlier attempt after the doc gets
@@ -4992,7 +4988,6 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
-                        : rawDomainsDebug ? { label: "Candidate ID — DEBUG (raw domains payload)", value: JSON.stringify(rawDomainsDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -5410,6 +5405,67 @@ function fillFrontendDevRubricColumns(row, iv) {
   return row;
 }
 
+// DSA's domain shape, confirmed against a real completed submission, 2026-09-15 (via the
+// temporary rawDomainsDebug hook on Candidate ID — see InterviewDataTable) — same structural
+// pattern as Frontend Development above: domain keys match plain label-derivation, but the
+// individual rating field inside cards[0] is an opaque form-builder id unrelated to the column
+// label, and remarks live as a field directly on the domain object rather than nested inside
+// cards[0]. Several opaque field ids are identical to Frontend Development's (field_dbwbp,
+// field_kxtlr, field_qva7z, field_7ujo7, "question") — the Interview App's form builder appears
+// to reuse ids across templates with parallel structure, not a mixup on our side.
+// Communication has NO remarks field in the raw payload at all (not even an empty string, unlike
+// e.g. problem_2_approach's blank field_p1aqs) — Communication Remarks stays permanently blank
+// (DSA_REMARKS_FIELD_KEYS has no entry for it) unless the Interview App team adds one.
+// Confirmed against only ONE submission so far — re-check if a second completed DSA interview
+// surfaces something different.
+const DSA_DOMAIN_KEYS = {
+  problem1ApproachRating: "problem_1_approach", problem1ApproachRemarks: "problem_1_approach",
+  problem1CodeRating: "problem_1_code", problem1CodeRemarks: "problem_1_code",
+  problem2ApproachRating: "problem_2_approach", problem2ApproachRemarks: "problem_2_approach",
+  problem2CodeRating: "problem_2_code", problem2CodeRemarks: "problem_2_code",
+  complexityOptimisationRating: "complexity_optimisation", complexityOptimisationRemarks: "complexity_optimisation",
+  dsaTheoryRating: "dsa_theory", dsaTheoryRemarks: "dsa_theory",
+  communicationRating: "communication", communicationRemarks: "communication",
+};
+const DSA_RATING_FIELD_KEYS = {
+  problem1ApproachRating: "field_3eoh7",
+  problem1CodeRating: "field_dbwbp",
+  problem2ApproachRating: "field_kxtlr",
+  problem2CodeRating: "field_qva7z",
+  complexityOptimisationRating: "field_7ujo7",
+  dsaTheoryRating: "question",
+  communicationRating: "field_9asr1",
+};
+const DSA_REMARKS_FIELD_KEYS = {
+  problem1ApproachRemarks: "field_xgu0v",
+  problem1CodeRemarks: "field_l8dsp",
+  problem2ApproachRemarks: "field_p1aqs",
+  problem2CodeRemarks: "domain_remarks_7seab",
+  complexityOptimisationRemarks: "domain_remarks_wz845",
+  dsaTheoryRemarks: "domain_remarks",
+  // communicationRemarks intentionally absent — no known raw field to read (see comment above).
+};
+function fillDsaRubricColumns(row, iv) {
+  const domains = iv.domains || {};
+  for (const col of DSA_COLUMNS) {
+    if (!col.group || row[col.key] !== undefined) continue;
+    const domain = domains[DSA_DOMAIN_KEYS[col.key]] || {};
+    if (col.key.endsWith("Remarks")) {
+      const remarksFieldKey = DSA_REMARKS_FIELD_KEYS[col.key];
+      row[col.key] = remarksFieldKey ? (domain[remarksFieldKey] || "") : "";
+      continue;
+    }
+    row[col.key] = round2(domain.domain_rating ?? "");
+    const fieldKey = DSA_RATING_FIELD_KEYS[col.key];
+    const descriptor = domain.descriptors?.cards?.[0]?.[fieldKey];
+    if (descriptor) {
+      row._domainDescriptors = row._domainDescriptors || {};
+      row._domainDescriptors[col.key] = descriptor;
+    }
+  }
+  return row;
+}
+
 const ACADEMY_ROW_BUILDERS = {
   // Bucket A currently has no live data from the Interview Coordinator App and an unconfirmed
   // rubric naming convention (its groups don't follow the "Part N: ..." pattern used elsewhere) —
@@ -5476,7 +5532,8 @@ const ACADEMY_ROW_BUILDERS = {
     if (common._statusDataMismatch) row.levels = "";
     return row;
   },
-  // Same best-effort rubric mapping as "FRONTEND:" above — unconfirmed against real DSA data yet.
+  // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-15 —
+  // see fillDsaRubricColumns for what's different about this bucket's domain shape.
   // Levels (frontendDevLevel) isn't computed here at all — that rule is defined in terms of
   // htmlCss/javascript/react/machineCoding, columns DSA doesn't have, so `levels` stays unset
   // and renders blank. Revisit if DSA gets its own Levels criteria.
@@ -5485,18 +5542,19 @@ const ACADEMY_ROW_BUILDERS = {
     const common = academyCommonFields(iv);
     // See the matching comment in "FRONTEND:" — don't compute Verdict Band for a row flagged
     // _statusDataMismatch.
-    return fillRubricColumns({
+    return fillDsaRubricColumns({
       ...common,
-      // TEMPORARY debug field, 2026-09-15 — see rawDomainsDebug in InterviewDataTable. Remove
-      // once DSA's rubric field mapping is confirmed.
-      _rawDomainsDebug: iv.domains || null,
-      overallRemarks: iv.remarks || "",
+      // Unlike the flat feedback.comments field (iv.remarks), which came back empty on a real
+      // completed submission that DID have an overall comment — that text sits instead in
+      // domains.overall_remarks.domain_remarks (DSA's own domain key; Frontend Development's
+      // equivalent is a differently-named "overall_feedback"). iv.remarks kept as a fallback.
+      overallRemarks: iv.domains?.overall_remarks?.domain_remarks || iv.remarks || "",
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
       verdict: common._statusDataMismatch ? "" : verdictBand(finalScore),
       status: academyOutcomeStatus(iv),
-    }, iv, DSA_COLUMNS);
+    }, iv);
   },
 };
 
