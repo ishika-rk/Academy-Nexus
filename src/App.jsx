@@ -4688,8 +4688,11 @@ const FRONTEND_DEV_COLUMNS = [
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "verdict", label: "Verdict" },
+  { key: "verdict", label: "Verdict Band" },
   { key: "status", label: "Clearance Status" },
+  // Criteria/cutoffs not decided yet (2026-09-14) — column added ahead of the logic, deliberately
+  // left unpopulated (no row builder sets a `levels` value) so it renders "—" until defined.
+  { key: "levels", label: "Levels" },
 ];
 
 // Same color-per-section treatment as FRONTEND_DEV_GROUPS above.
@@ -4729,8 +4732,11 @@ const DSA_COLUMNS = [
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "verdict", label: "Verdict" },
+  { key: "verdict", label: "Verdict Band" },
   { key: "status", label: "Clearance Status" },
+  // Criteria/cutoffs not decided yet (2026-09-14) — column added ahead of the logic, deliberately
+  // left unpopulated (no row builder sets a `levels` value) so it renders "—" until defined.
+  { key: "levels", label: "Levels" },
 ];
 
 const INTERVIEW_TABLE_COLUMNS = {
