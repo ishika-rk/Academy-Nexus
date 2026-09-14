@@ -5144,24 +5144,31 @@ function integrityScore(iv) {
 }
 
 // Bucket C's finalVerdict comes from the Interview App scored out of 5 — displayed here
-// scaled to out of 10 to match the other buckets' scoring convention.
+// scaled to out of 10 to match the other buckets' scoring convention. Guards against null/""/
+// undefined BEFORE calling Number() — confirmed 2026-09-14 that Number(null) is 0, which passes
+// Number.isFinite, so a no-show/incomplete interview's null finalVerdict was scaling to a
+// fabricated "0" instead of staying blank (same bug existed in every sibling scale function
+// below until this fix).
 function scaleOutOfFiveToTen(raw) {
+  if (raw === "" || raw === null || raw === undefined) return raw ?? "";
   const n = Number(raw);
-  return Number.isFinite(n) ? round2(n * 2) : (raw ?? "");
+  return Number.isFinite(n) ? round2(n * 2) : raw;
 }
 
 // Bucket B / TR1's finalVerdict also comes from the Interview App scored out of 5 —
 // displayed here scaled to out of 15 to match this round's scoring convention.
 function scaleOutOfFiveToFifteen(raw) {
+  if (raw === "" || raw === null || raw === undefined) return raw ?? "";
   const n = Number(raw);
-  return Number.isFinite(n) ? round2(n * 3) : (raw ?? "");
+  return Number.isFinite(n) ? round2(n * 3) : raw;
 }
 
 // Frontend Development and DSA's finalVerdict also comes from the Interview App scored out of
 // 5 — displayed here scaled to out of 100.
 function scaleOutOfFiveToHundred(raw) {
+  if (raw === "" || raw === null || raw === undefined) return raw ?? "";
   const n = Number(raw);
-  return Number.isFinite(n) ? round2(n * 20) : (raw ?? "");
+  return Number.isFinite(n) ? round2(n * 20) : raw;
 }
 
 // Frontend Development / DSA's Verdict band, matching the sheet formula given 2026-09-14:
