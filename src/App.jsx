@@ -5352,6 +5352,25 @@ const FRONTEND_DEV_REMARKS_FIELD_KEYS = {
   machineCodingRemarks: "domain_remarks_wz845",
   debugRemarks: "domain_remarks",
 };
+// Frontend Development's Levels tier, rule given 2026-09-14:
+//   L4   if htmlCss >= 4 AND javascript >= 4 AND react >= 4 AND machineCoding >= 4
+//   L3   else if react >= 3 AND machineCoding >= 3
+//   L2   else if javascript >= 3
+//   L1   else if htmlCss >= 3
+//   Below L1  otherwise
+// Blank if any of the four domain ratings is missing — checked explicitly against ""/null/
+// undefined (not just falsy) since 0 is a real, valid rating.
+function frontendDevLevel(row) {
+  const vals = [row.htmlCss, row.javascript, row.react, row.machineCoding];
+  if (vals.some(v => v === "" || v === null || v === undefined)) return "";
+  const [htmlCss, javascript, react, machineCoding] = vals.map(Number);
+  if (htmlCss >= 4 && javascript >= 4 && react >= 4 && machineCoding >= 4) return "L4";
+  if (react >= 3 && machineCoding >= 3) return "L3";
+  if (javascript >= 3) return "L2";
+  if (htmlCss >= 3) return "L1";
+  return "Below L1";
+}
+
 function fillFrontendDevRubricColumns(row, iv) {
   const domains = iv.domains || {};
   for (const col of FRONTEND_DEV_COLUMNS) {
@@ -5370,6 +5389,7 @@ function fillFrontendDevRubricColumns(row, iv) {
       row._domainDescriptors[col.key] = descriptor;
     }
   }
+  row.levels = frontendDevLevel(row);
   return row;
 }
 
@@ -5433,6 +5453,9 @@ const ACADEMY_ROW_BUILDERS = {
     }, iv);
   },
   // Same best-effort rubric mapping as "FRONTEND:" above — unconfirmed against real DSA data yet.
+  // Levels (frontendDevLevel) isn't computed here at all — that rule is defined in terms of
+  // htmlCss/javascript/react/machineCoding, columns DSA doesn't have, so `levels` stays unset
+  // and renders blank. Revisit if DSA gets its own Levels criteria.
   "DSA:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
     return fillRubricColumns({
