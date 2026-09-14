@@ -4686,7 +4686,7 @@ const FRONTEND_DEV_COLUMNS = [
   { key: "debug", label: "Debug", subLabel: "Rating (0-5)", group: FRONTEND_DEV_GROUPS.debug },
   { key: "debugRemarks", label: "Debug Remarks", subLabel: "Remarks", group: FRONTEND_DEV_GROUPS.debug },
   { key: "overallRemarks", label: "Overall Remarks" },
-  { key: "finalScore", label: "Final Score" },
+  { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict" },
   { key: "status", label: "Clearance Status" },
@@ -4727,7 +4727,7 @@ const DSA_COLUMNS = [
   { key: "communicationRating", label: "Communication", subLabel: "Rating (0-5)", group: DSA_GROUPS.communication },
   { key: "communicationRemarks", label: "Communication Remarks", subLabel: "Remarks", group: DSA_GROUPS.communication },
   { key: "overallRemarks", label: "Overall Remarks" },
-  { key: "finalScore", label: "Final Score" },
+  { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict" },
   { key: "status", label: "Clearance Status" },
@@ -5157,6 +5157,13 @@ function scaleOutOfFiveToFifteen(raw) {
   return Number.isFinite(n) ? round2(n * 3) : (raw ?? "");
 }
 
+// Frontend Development and DSA's finalVerdict also comes from the Interview App scored out of
+// 5 — displayed here scaled to out of 100.
+function scaleOutOfFiveToHundred(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n) ? round2(n * 20) : (raw ?? "");
+}
+
 // Bucket C's clearance status: an outcome already set by the Interview App (Shortlisted/
 // Rejected) is relabeled to match our Cleared/Not Cleared wording; anything else that's
 // come back completed without an outcome is decided by our own 70%-of-10 cutoff on the
@@ -5389,7 +5396,7 @@ const ACADEMY_ROW_BUILDERS = {
     // domains.overall_feedback.domain_remarks. iv.remarks kept as a fallback in case some
     // submissions do populate the flat field.
     overallRemarks: iv.domains?.overall_feedback?.domain_remarks || iv.remarks || "",
-    finalScore: round2(iv.finalVerdict ?? ""),
+    finalScore: scaleOutOfFiveToHundred(iv.finalVerdict),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
     // Verdict is the Interview App's own outcome recommendation — the raw interview status
@@ -5402,7 +5409,7 @@ const ACADEMY_ROW_BUILDERS = {
   "DSA:": (iv) => fillRubricColumns({
     ...academyCommonFields(iv),
     overallRemarks: iv.remarks || "",
-    finalScore: round2(iv.finalVerdict ?? ""),
+    finalScore: scaleOutOfFiveToHundred(iv.finalVerdict),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
     // Verdict is the Interview App's own outcome recommendation — the raw interview status
