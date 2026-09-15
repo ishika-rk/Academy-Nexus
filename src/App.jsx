@@ -4516,6 +4516,7 @@ const INTERVIEW_BUCKETS = [
   { id: "FRONTEND", label: "Frontend Development", subheaders: [] },
   { id: "DSA", label: "Programming with Problem Solving (DSA)", subheaders: [] },
   { id: "SWE", label: "Software Engineering Fundamentals", subheaders: [] },
+  { id: "BACKEND", label: "Backend Development", subheaders: [] },
 ];
 
 const NXTMOCK_COLUMNS = [
@@ -4786,6 +4787,55 @@ const SWE_FUNDAMENTALS_COLUMNS = [
   { key: "levels", label: "Levels" },
 ];
 
+// Backend Development — added 2026-09-15, cloned from the SWE Fundamentals/DSA/Frontend
+// Development table shape with this round's own section names. Rubric field mapping is
+// UNCONFIRMED — no real completed submission checked yet, same starting point every other bucket
+// began at. Falls back to the generic fillRubricColumns label-derivation for now.
+const BACKEND_GROUPS = {
+  projectApiDeepDive: { name: "Project / API Deep-Dive", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  l1BackendFoundations: { name: "L1 — Backend Foundations", header: "#C55A11", headerText: "#fff", sub: "#FBE2D5", subText: "#1f2937" },
+  l1CrudEndpointTask: { name: "L1 — CRUD Endpoint Task", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+  l2DatabaseAuth: { name: "L2 — Database & Auth", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  l2DebugFixTask: { name: "L2 — Debug / Fix Task", header: "#7030A0", headerText: "#fff", sub: "#E8DAEF", subText: "#1f2937" },
+  l3BackendAdvanced: { name: "L3 — Backend Advanced", header: "#31859C", headerText: "#fff", sub: "#DAEEF3", subText: "#1f2937" },
+  l4ProductionBackend: { name: "L4 — Production Backend", header: "#833C00", headerText: "#fff", sub: "#FBE5D6", subText: "#1f2937" },
+  communication: { name: "Communication", header: "#C00000", headerText: "#fff", sub: "#F2DCDB", subText: "#1f2937" },
+};
+
+const BACKEND_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
+  { key: "projectApiDeepDiveRating", label: "Project / API Deep-Dive", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.projectApiDeepDive },
+  { key: "projectApiDeepDiveRemarks", label: "Project / API Deep-Dive Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.projectApiDeepDive },
+  { key: "l1BackendFoundationsRating", label: "L1 — Backend Foundations", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.l1BackendFoundations },
+  { key: "l1BackendFoundationsRemarks", label: "L1 — Backend Foundations Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.l1BackendFoundations },
+  { key: "l1CrudEndpointTaskRating", label: "L1 — CRUD Endpoint Task", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.l1CrudEndpointTask },
+  { key: "l1CrudEndpointTaskRemarks", label: "L1 — CRUD Endpoint Task Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.l1CrudEndpointTask },
+  { key: "l2DatabaseAuthRating", label: "L2 — Database & Auth", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.l2DatabaseAuth },
+  { key: "l2DatabaseAuthRemarks", label: "L2 — Database & Auth Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.l2DatabaseAuth },
+  { key: "l2DebugFixTaskRating", label: "L2 — Debug / Fix Task", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.l2DebugFixTask },
+  { key: "l2DebugFixTaskRemarks", label: "L2 — Debug / Fix Task Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.l2DebugFixTask },
+  { key: "l3BackendAdvancedRating", label: "L3 — Backend Advanced", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.l3BackendAdvanced },
+  { key: "l3BackendAdvancedRemarks", label: "L3 — Backend Advanced Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.l3BackendAdvanced },
+  { key: "l4ProductionBackendRating", label: "L4 — Production Backend", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.l4ProductionBackend },
+  { key: "l4ProductionBackendRemarks", label: "L4 — Production Backend Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.l4ProductionBackend },
+  { key: "communicationRating", label: "Communication", subLabel: "Rating (0-5)", group: BACKEND_GROUPS.communication },
+  { key: "communicationRemarks", label: "Communication Remarks", subLabel: "Remarks", group: BACKEND_GROUPS.communication },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score ( out of 100 )" },
+  { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "verdict", label: "Verdict Band" },
+  { key: "status", label: "Clearance Status" },
+  // Criteria not given yet — column added ahead of the logic, deliberately left unpopulated (no
+  // row builder sets a `levels` value) so it renders "—" until defined.
+  { key: "levels", label: "Levels" },
+];
+
 const INTERVIEW_TABLE_COLUMNS = {
   "A:NxtMock": { columns: NXTMOCK_COLUMNS, source: "the Dashboard via a service account" },
   "A:TR1": { columns: TR1_COLUMNS, source: "the Interview App" },
@@ -4795,6 +4845,7 @@ const INTERVIEW_TABLE_COLUMNS = {
   "FRONTEND:": { columns: FRONTEND_DEV_COLUMNS, source: "the Interview App" },
   "DSA:": { columns: DSA_COLUMNS, source: "the Interview App" },
   "SWE:": { columns: SWE_FUNDAMENTALS_COLUMNS, source: "the Interview App" },
+  "BACKEND:": { columns: BACKEND_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
@@ -5150,9 +5201,12 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
 const DIRECT_TEMPLATE_SLOTS = {
   "Frontend Development": "FRONTEND:",
   "Programming with Problem Solving (DSA)": "DSA:",
-  // Confirmed exact templateName string 2026-09-15 (given directly, not yet verified against a
-  // real synced doc — unlike the two above, which were checked against real data).
+  // Exact templateName string given directly 2026-09-15, since verified correct against a real
+  // synced doc (rows did appear, and the rubric mapping check succeeded).
   "Software Engineering Fundamentals": "SWE:",
+  // Exact templateName string given directly 2026-09-15, NOT yet verified against a real synced
+  // doc — if this table stays empty after a sync, check this string first.
+  "Backend Development": "BACKEND:",
 };
 function parseAcademySlot(templateName) {
   const name = (templateName || "").trim();
@@ -5286,6 +5340,22 @@ function verdictBand(finalScore) {
 // Frontend Development/DSA; flag if that's wrong. Blank input stays blank rather than falling
 // through to "Reject", same as verdictBand.
 function sweVerdictBand(finalScore) {
+  if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
+  const n = Number(finalScore);
+  if (!Number.isFinite(n)) return "";
+  if (n >= 75) return "Strong Hire";
+  if (n >= 60) return "Medium Hire";
+  if (n >= 45) return "Low Hire";
+  return "Reject";
+}
+
+// Backend Development's Verdict Band, criteria given 2026-09-15 — a separate function scoped to
+// this bucket only, even though its cutoffs happen to be numerically identical to SWE
+// Fundamentals' sweVerdictBand (Strong Hire >= 75, Medium Hire >= 60, Low Hire >= 45) — kept
+// independent rather than reused so each bucket's rule can be edited/documented on its own
+// without assuming coincidence implies a shared source. Same Reject-catch-all inference and
+// blank-stays-blank behavior as sweVerdictBand.
+function backendVerdictBand(finalScore) {
   if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
   const n = Number(finalScore);
   if (!Number.isFinite(n)) return "";
@@ -5758,6 +5828,25 @@ const ACADEMY_ROW_BUILDERS = {
       verdict: common._statusDataMismatch ? "" : band,
       status: academyOutcomeStatus(iv, band),
     }, iv);
+  },
+  // Unconfirmed rubric mapping — no real Interview App data checked yet, same starting point
+  // every other bucket began at. Falls back to generic fillRubricColumns label-derivation; a
+  // wrong/unconfirmed field key just renders "—", it won't show a fabricated number. Verdict Band
+  // uses backendVerdictBand (own cutoffs, given 2026-09-15); Levels has no criteria yet — user
+  // said to leave it blank for now, so it's not computed at all.
+  "BACKEND:": (iv) => {
+    const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
+    const band = backendVerdictBand(finalScore);
+    const common = academyCommonFields(iv);
+    return fillRubricColumns({
+      ...common,
+      overallRemarks: iv.remarks || "",
+      finalScore,
+      interviewIntegrityScore: integrityScore(iv),
+      _integrityDetails: iv.domains?.integrity || null,
+      verdict: common._statusDataMismatch ? "" : band,
+      status: academyOutcomeStatus(iv, band),
+    }, iv, BACKEND_COLUMNS);
   },
 };
 
