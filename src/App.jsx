@@ -5042,12 +5042,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  // TEMPORARY debug aid, 2026-09-15: clicking Candidate ID dumps the raw domains
-                  // payload so Software Engineering Fundamentals' rubric field mapping can be
-                  // confirmed against real data, same as was done for Frontend Development/DSA.
-                  // Remove once confirmed.
-                  const rawDomainsDebug = col.key === "candidateId" ? row._rawDomainsDebug : null;
-                  const clickable = hasValue || !!details || !!descriptor || !!rawDomainsDebug;
+                  const clickable = hasValue || !!details || !!descriptor;
                   // Data-mismatch warning: confirmed 2026-09-14 (Hitheesha, Frontend Development)
                   // that the Interview Coordinator App can leave a doc's feedbackSubmittedAt/
                   // domains/finalVerdict populated from an earlier attempt after the doc gets
@@ -5065,7 +5060,6 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
-                        : rawDomainsDebug ? { label: "Candidate ID — DEBUG (raw domains payload)", value: JSON.stringify(rawDomainsDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -5566,6 +5560,71 @@ function fillDsaRubricColumns(row, iv) {
   return row;
 }
 
+// Software Engineering Fundamentals' domain shape, confirmed against a real completed
+// submission, 2026-09-15 (via the temporary rawDomainsDebug hook on Candidate ID) — same
+// structural pattern as Frontend Development/DSA above: domain keys match plain label-
+// derivation, individual rating fields inside cards[0] are opaque form-builder ids, remarks
+// live as a field directly on the domain object rather than nested inside cards[0].
+// Rating field ids for the first six sections are IDENTICAL to Frontend Development/DSA's own
+// (field_3eoh7, field_dbwbp, field_kxtlr, field_qva7z, field_7ujo7, "question") in the same
+// position order — confirms the Interview App's form builder reuses ids across templates.
+// Communication breaks that streak: its field id here is "subject", not Frontend Development/
+// DSA's field_9asr1. Unlike DSA (which has no Communication remarks field at all), SWE's
+// Communication DOES have one ("domain_remarks", empty in the checked submission but present).
+// Overall Remarks is a third distinct shape: the overall_remarks domain's comment field is the
+// opaque "field_gckbh" (Frontend Development uses a semantic "overall_feedback.domain_remarks",
+// DSA a semantic "overall_remarks.domain_remarks") — empty in the checked submission, so this is
+// inferred from its being the only candidate field there, not confirmed by an actual value yet.
+// Confirmed against only ONE submission so far — re-check if a second surfaces something
+// different, especially Overall Remarks and Communication Remarks (both empty/unconfirmed here).
+const SWE_DOMAIN_KEYS = {
+  coreCsFundamentalsRating: "l1_core_cs_fundamentals", coreCsFundamentalsRemarks: "l1_core_cs_fundamentals",
+  sqlQueryTaskRating: "l1_sql_query_task", sqlQueryTaskRemarks: "l1_sql_query_task",
+  oopConceptsRating: "l2_oop_concepts", oopConceptsRemarks: "l2_oop_concepts",
+  oopDesignTaskRating: "l2_oop_design_task", oopDesignTaskRemarks: "l2_oop_design_task",
+  softwareDesignCleanCodeRating: "l3_software_design_clean_code", softwareDesignCleanCodeRemarks: "l3_software_design_clean_code",
+  codeReviewExerciseRating: "l3_code_review_exercise", codeReviewExerciseRemarks: "l3_code_review_exercise",
+  communicationRating: "communication", communicationRemarks: "communication",
+};
+const SWE_RATING_FIELD_KEYS = {
+  coreCsFundamentalsRating: "field_3eoh7",
+  sqlQueryTaskRating: "field_dbwbp",
+  oopConceptsRating: "field_kxtlr",
+  oopDesignTaskRating: "field_qva7z",
+  softwareDesignCleanCodeRating: "field_7ujo7",
+  codeReviewExerciseRating: "question",
+  communicationRating: "subject",
+};
+const SWE_REMARKS_FIELD_KEYS = {
+  coreCsFundamentalsRemarks: "field_xgu0v",
+  sqlQueryTaskRemarks: "field_l8dsp",
+  oopConceptsRemarks: "field_p1aqs",
+  oopDesignTaskRemarks: "domain_remarks_7seab",
+  softwareDesignCleanCodeRemarks: "domain_remarks_wz845",
+  codeReviewExerciseRemarks: "domain_remarks",
+  communicationRemarks: "domain_remarks",
+};
+function fillSweRubricColumns(row, iv) {
+  const domains = iv.domains || {};
+  for (const col of SWE_FUNDAMENTALS_COLUMNS) {
+    if (!col.group || row[col.key] !== undefined) continue;
+    const domain = domains[SWE_DOMAIN_KEYS[col.key]] || {};
+    if (col.key.endsWith("Remarks")) {
+      const remarksFieldKey = SWE_REMARKS_FIELD_KEYS[col.key];
+      row[col.key] = remarksFieldKey ? (domain[remarksFieldKey] || "") : "";
+      continue;
+    }
+    row[col.key] = round2(domain.domain_rating ?? "");
+    const fieldKey = SWE_RATING_FIELD_KEYS[col.key];
+    const descriptor = domain.descriptors?.cards?.[0]?.[fieldKey];
+    if (descriptor) {
+      row._domainDescriptors = row._domainDescriptors || {};
+      row._domainDescriptors[col.key] = descriptor;
+    }
+  }
+  return row;
+}
+
 const ACADEMY_ROW_BUILDERS = {
   // Bucket A currently has no live data from the Interview Coordinator App and an unconfirmed
   // rubric naming convention (its groups don't follow the "Part N: ..." pattern used elsewhere) —
@@ -5659,27 +5718,27 @@ const ACADEMY_ROW_BUILDERS = {
     if (common._statusDataMismatch) row.levels = "";
     return row;
   },
-  // Unconfirmed rubric mapping — see the comment above SWE_FUNDAMENTALS_GROUPS. Falls back to
-  // generic fillRubricColumns label-derivation until checked against a real completed submission,
-  // the same starting point DSA and Frontend Development began at. Verdict Band/Clearance Status
-  // reuse the same formulas already confirmed for Frontend Development/DSA (cloned per request);
-  // Levels has no criteria yet, so it's not computed at all — stays unset/blank.
+  // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-15 —
+  // see fillSweRubricColumns for what's different about this bucket's domain shape. Verdict Band/
+  // Clearance Status reuse the same formulas already confirmed for Frontend Development/DSA
+  // (cloned per request); Levels has no criteria yet, so it's not computed at all.
   "SWE:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
     const band = verdictBand(finalScore);
     const common = academyCommonFields(iv);
-    return fillRubricColumns({
+    return fillSweRubricColumns({
       ...common,
-      // TEMPORARY debug field, 2026-09-15 — see rawDomainsDebug in InterviewDataTable. Remove
-      // once SWE's rubric field mapping is confirmed.
-      _rawDomainsDebug: iv.domains || null,
-      overallRemarks: iv.remarks || "",
+      // The flat feedback.comments field (iv.remarks) is unpopulated on the one submission
+      // checked so far — same pattern as Frontend Development/DSA. domains.overall_remarks.
+      // field_gckbh is the only candidate field there, but it was also empty in that submission,
+      // so this mapping is inferred from structure, not confirmed by an actual value yet.
+      overallRemarks: iv.domains?.overall_remarks?.field_gckbh || iv.remarks || "",
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
       verdict: common._statusDataMismatch ? "" : band,
       status: academyOutcomeStatus(iv, band),
-    }, iv, SWE_FUNDAMENTALS_COLUMNS);
+    }, iv);
   },
 };
 
