@@ -5042,7 +5042,12 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  const clickable = hasValue || !!details || !!descriptor;
+                  // TEMPORARY debug aid, 2026-09-15: clicking Candidate ID dumps the raw domains
+                  // payload so Software Engineering Fundamentals' rubric field mapping can be
+                  // confirmed against real data, same as was done for Frontend Development/DSA.
+                  // Remove once confirmed.
+                  const rawDomainsDebug = col.key === "candidateId" ? row._rawDomainsDebug : null;
+                  const clickable = hasValue || !!details || !!descriptor || !!rawDomainsDebug;
                   // Data-mismatch warning: confirmed 2026-09-14 (Hitheesha, Frontend Development)
                   // that the Interview Coordinator App can leave a doc's feedbackSubmittedAt/
                   // domains/finalVerdict populated from an earlier attempt after the doc gets
@@ -5060,6 +5065,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
+                        : rawDomainsDebug ? { label: "Candidate ID — DEBUG (raw domains payload)", value: JSON.stringify(rawDomainsDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -5664,6 +5670,9 @@ const ACADEMY_ROW_BUILDERS = {
     const common = academyCommonFields(iv);
     return fillRubricColumns({
       ...common,
+      // TEMPORARY debug field, 2026-09-15 — see rawDomainsDebug in InterviewDataTable. Remove
+      // once SWE's rubric field mapping is confirmed.
+      _rawDomainsDebug: iv.domains || null,
       overallRemarks: iv.remarks || "",
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
