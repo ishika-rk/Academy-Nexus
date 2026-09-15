@@ -5279,6 +5279,22 @@ function verdictBand(finalScore) {
   return "Reject";
 }
 
+// Software Engineering Fundamentals' Verdict Band, criteria given 2026-09-15 — different cutoffs
+// than Frontend Development/DSA's verdictBand above, scoped to this bucket only:
+// Strong Hire >= 75, Medium Hire >= 60, Low Hire >= 45. The catch-all "Reject" below 45 wasn't
+// explicitly given — inferred from the same four-band structure already established for
+// Frontend Development/DSA; flag if that's wrong. Blank input stays blank rather than falling
+// through to "Reject", same as verdictBand.
+function sweVerdictBand(finalScore) {
+  if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
+  const n = Number(finalScore);
+  if (!Number.isFinite(n)) return "";
+  if (n >= 75) return "Strong Hire";
+  if (n >= 60) return "Medium Hire";
+  if (n >= 45) return "Low Hire";
+  return "Reject";
+}
+
 // Bucket C's clearance status: an outcome already set by the Interview App (Shortlisted/
 // Rejected) is relabeled to match our Cleared/Not Cleared wording; anything else that's
 // come back completed without an outcome is decided by our own 70%-of-10 cutoff on the
@@ -5719,12 +5735,15 @@ const ACADEMY_ROW_BUILDERS = {
     return row;
   },
   // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-15 —
-  // see fillSweRubricColumns for what's different about this bucket's domain shape. Verdict Band/
-  // Clearance Status reuse the same formulas already confirmed for Frontend Development/DSA
-  // (cloned per request); Levels has no criteria yet, so it's not computed at all.
+  // see fillSweRubricColumns for what's different about this bucket's domain shape. Verdict Band
+  // uses its own SWE-specific cutoffs (sweVerdictBand), given 2026-09-15 — NOT the same cutoffs
+  // as Frontend Development/DSA's verdictBand, don't assume the two stay in sync. Clearance
+  // Status still reuses the shared academyOutcomeStatus formula (Strong/Medium Hire -> Cleared,
+  // Low Hire/Reject -> Not Cleared), just fed this bucket's own band. Levels has no criteria yet,
+  // so it's not computed at all.
   "SWE:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
-    const band = verdictBand(finalScore);
+    const band = sweVerdictBand(finalScore);
     const common = academyCommonFields(iv);
     return fillSweRubricColumns({
       ...common,
