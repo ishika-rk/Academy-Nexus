@@ -4667,7 +4667,6 @@ const FRONTEND_DEV_GROUPS = {
 const FRONTEND_DEV_COLUMNS = [
   { key: "candidateId", label: "Candidate ID" },
   { key: "candidateName", label: "Candidate Name" },
-  { key: "candidateResume", label: "Candidate Resume" },
   { key: "interviewDate", label: "Interview Date" },
   { key: "interviewStartTime", label: "Interview Start time" },
   { key: "panelistName", label: "Name of the Panelist" },
@@ -4709,7 +4708,6 @@ const DSA_GROUPS = {
 const DSA_COLUMNS = [
   { key: "candidateId", label: "Candidate ID" },
   { key: "candidateName", label: "Candidate Name" },
-  { key: "candidateResume", label: "Candidate Resume" },
   { key: "interviewDate", label: "Interview Date" },
   { key: "interviewStartTime", label: "Interview Start time" },
   { key: "panelistName", label: "Name of the Panelist" },
