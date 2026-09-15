@@ -4515,6 +4515,7 @@ const INTERVIEW_BUCKETS = [
   { id: "C", label: "Bucket C", subheaders: [] },
   { id: "FRONTEND", label: "Frontend Development", subheaders: [] },
   { id: "DSA", label: "Programming with Problem Solving (DSA)", subheaders: [] },
+  { id: "SWE", label: "Software Engineering Fundamentals", subheaders: [] },
 ];
 
 const NXTMOCK_COLUMNS = [
@@ -4689,8 +4690,7 @@ const FRONTEND_DEV_COLUMNS = [
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict Band" },
   { key: "status", label: "Clearance Status" },
-  // Criteria/cutoffs not decided yet (2026-09-14) — column added ahead of the logic, deliberately
-  // left unpopulated (no row builder sets a `levels` value) so it renders "—" until defined.
+  // Criteria given 2026-09-14 — see frontendDevLevel.
   { key: "levels", label: "Levels" },
 ];
 
@@ -4732,8 +4732,57 @@ const DSA_COLUMNS = [
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict Band" },
   { key: "status", label: "Clearance Status" },
-  // Criteria/cutoffs not decided yet (2026-09-14) — column added ahead of the logic, deliberately
-  // left unpopulated (no row builder sets a `levels` value) so it renders "—" until defined.
+  // Criteria given 2026-09-14 — see frontendDevLevel.
+  { key: "levels", label: "Levels" },
+];
+
+// Software Engineering Fundamentals — added 2026-09-15, cloned from the DSA/Frontend Development
+// table shape (double header: section name, Rating + Remarks under it) with this round's own
+// section names. Rubric field mapping (domain keys, individual rating/remarks field ids inside
+// the Interview App's payload) is UNCONFIRMED — no real completed submission checked yet, same
+// starting point DSA and Frontend Development began at before their own dedicated row-fillers
+// were built. Falls back to the generic fillRubricColumns label-derivation for now; a wrong/
+// unconfirmed field key just renders "—", it won't show a fabricated number. Levels criteria
+// also not given yet — column added ahead of the logic, deliberately left unpopulated.
+const SWE_FUNDAMENTALS_GROUPS = {
+  coreCsFundamentals: { name: "L1 — Core CS Fundamentals", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  sqlQueryTask: { name: "L1 — SQL Query Task", header: "#C55A11", headerText: "#fff", sub: "#FBE2D5", subText: "#1f2937" },
+  oopConcepts: { name: "L2 — OOP Concepts", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+  oopDesignTask: { name: "L2 — OOP Design Task", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  softwareDesignCleanCode: { name: "L3 — Software Design & Clean Code", header: "#7030A0", headerText: "#fff", sub: "#E8DAEF", subText: "#1f2937" },
+  codeReviewExercise: { name: "L3 — Code Review Exercise", header: "#31859C", headerText: "#fff", sub: "#DAEEF3", subText: "#1f2937" },
+  communication: { name: "Communication", header: "#C00000", headerText: "#fff", sub: "#F2DCDB", subText: "#1f2937" },
+};
+
+const SWE_FUNDAMENTALS_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
+  { key: "coreCsFundamentalsRating", label: "L1 — Core CS Fundamentals", subLabel: "Rating (0-5)", group: SWE_FUNDAMENTALS_GROUPS.coreCsFundamentals },
+  { key: "coreCsFundamentalsRemarks", label: "L1 — Core CS Fundamentals Remarks", subLabel: "Remarks", group: SWE_FUNDAMENTALS_GROUPS.coreCsFundamentals },
+  { key: "sqlQueryTaskRating", label: "L1 — SQL Query Task", subLabel: "Rating (0-5)", group: SWE_FUNDAMENTALS_GROUPS.sqlQueryTask },
+  { key: "sqlQueryTaskRemarks", label: "L1 — SQL Query Task Remarks", subLabel: "Remarks", group: SWE_FUNDAMENTALS_GROUPS.sqlQueryTask },
+  { key: "oopConceptsRating", label: "L2 — OOP Concepts", subLabel: "Rating (0-5)", group: SWE_FUNDAMENTALS_GROUPS.oopConcepts },
+  { key: "oopConceptsRemarks", label: "L2 — OOP Concepts Remarks", subLabel: "Remarks", group: SWE_FUNDAMENTALS_GROUPS.oopConcepts },
+  { key: "oopDesignTaskRating", label: "L2 — OOP Design Task", subLabel: "Rating (0-5)", group: SWE_FUNDAMENTALS_GROUPS.oopDesignTask },
+  { key: "oopDesignTaskRemarks", label: "L2 — OOP Design Task Remarks", subLabel: "Remarks", group: SWE_FUNDAMENTALS_GROUPS.oopDesignTask },
+  { key: "softwareDesignCleanCodeRating", label: "L3 — Software Design & Clean Code", subLabel: "Rating (0-5)", group: SWE_FUNDAMENTALS_GROUPS.softwareDesignCleanCode },
+  { key: "softwareDesignCleanCodeRemarks", label: "L3 — Software Design & Clean Code Remarks", subLabel: "Remarks", group: SWE_FUNDAMENTALS_GROUPS.softwareDesignCleanCode },
+  { key: "codeReviewExerciseRating", label: "L3 — Code Review Exercise", subLabel: "Rating (0-5)", group: SWE_FUNDAMENTALS_GROUPS.codeReviewExercise },
+  { key: "codeReviewExerciseRemarks", label: "L3 — Code Review Exercise Remarks", subLabel: "Remarks", group: SWE_FUNDAMENTALS_GROUPS.codeReviewExercise },
+  { key: "communicationRating", label: "Communication", subLabel: "Rating (0-5)", group: SWE_FUNDAMENTALS_GROUPS.communication },
+  { key: "communicationRemarks", label: "Communication Remarks", subLabel: "Remarks", group: SWE_FUNDAMENTALS_GROUPS.communication },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score ( out of 100 )" },
+  { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "verdict", label: "Verdict Band" },
+  { key: "status", label: "Clearance Status" },
+  // Criteria not given yet — column added ahead of the logic, deliberately left unpopulated (no
+  // row builder sets a `levels` value) so it renders "—" until defined.
   { key: "levels", label: "Levels" },
 ];
 
@@ -4745,6 +4794,7 @@ const INTERVIEW_TABLE_COLUMNS = {
   "B:TR2": { columns: BUCKET_B_TR2_COLUMNS, source: "the Interview App" },
   "FRONTEND:": { columns: FRONTEND_DEV_COLUMNS, source: "the Interview App" },
   "DSA:": { columns: DSA_COLUMNS, source: "the Interview App" },
+  "SWE:": { columns: SWE_FUNDAMENTALS_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
@@ -5100,6 +5150,9 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
 const DIRECT_TEMPLATE_SLOTS = {
   "Frontend Development": "FRONTEND:",
   "Programming with Problem Solving (DSA)": "DSA:",
+  // Confirmed exact templateName string 2026-09-15 (given directly, not yet verified against a
+  // real synced doc — unlike the two above, which were checked against real data).
+  "Software Engineering Fundamentals": "SWE:",
 };
 function parseAcademySlot(templateName) {
   const name = (templateName || "").trim();
@@ -5599,6 +5652,25 @@ const ACADEMY_ROW_BUILDERS = {
     }, iv);
     if (common._statusDataMismatch) row.levels = "";
     return row;
+  },
+  // Unconfirmed rubric mapping — see the comment above SWE_FUNDAMENTALS_GROUPS. Falls back to
+  // generic fillRubricColumns label-derivation until checked against a real completed submission,
+  // the same starting point DSA and Frontend Development began at. Verdict Band/Clearance Status
+  // reuse the same formulas already confirmed for Frontend Development/DSA (cloned per request);
+  // Levels has no criteria yet, so it's not computed at all — stays unset/blank.
+  "SWE:": (iv) => {
+    const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
+    const band = verdictBand(finalScore);
+    const common = academyCommonFields(iv);
+    return fillRubricColumns({
+      ...common,
+      overallRemarks: iv.remarks || "",
+      finalScore,
+      interviewIntegrityScore: integrityScore(iv),
+      _integrityDetails: iv.domains?.integrity || null,
+      verdict: common._statusDataMismatch ? "" : band,
+      status: academyOutcomeStatus(iv, band),
+    }, iv, SWE_FUNDAMENTALS_COLUMNS);
   },
 };
 
