@@ -4819,7 +4819,7 @@ function StatusFilterHeader({ label, options, selected, onChange, thStyle, rowSp
   };
 
   return (
-    <th ref={ref} rowSpan={rowSpan} style={{ ...thStyle, position: "relative" }}>
+    <th ref={ref} rowSpan={rowSpan} style={{ ...thStyle, position: thStyle.position || "relative" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
         <span>{label}</span>
         <button onClick={() => setOpen(o => !o)} title="Filter" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: selected ? C.accent : C.muted, display: "inline-flex", flexShrink: 0 }}>
@@ -4884,18 +4884,34 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
   const thBase = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", border: `1px solid ${C.border}`, padding: "8px 10px", textAlign: "left", color: C.muted, whiteSpace: "normal", lineHeight: 1.4 };
   const tdBase = { border: `1px solid ${C.border}`, padding: "8px 10px", width: INTERVIEW_COL_WIDTH, minWidth: INTERVIEW_COL_WIDTH, maxWidth: INTERVIEW_COL_WIDTH, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.text };
 
-  const renderUngroupedTh = (col, rowSpan) => filterableCols.some(c => c.key === col.key) ? (
+  // Freeze columns up through Candidate Name (Google-Sheets-style) so identifying info stays in
+  // view while scrolling through the wide rubric section — every bucket's column set starts
+  // candidateId, candidateName, ... so this works generically off whichever index that lands on
+  // rather than a hardcoded count.
+  const freezeCount = (() => {
+    const idx = columns.findIndex(c => c.key === "candidateName");
+    return idx === -1 ? 0 : idx + 1;
+  })();
+  const stickyStyle = (colIndex, bg) => colIndex < freezeCount ? {
+    position: "sticky",
+    left: colIndex * INTERVIEW_COL_WIDTH,
+    zIndex: colIndex === freezeCount - 1 ? 3 : 2,
+    background: bg,
+    boxShadow: colIndex === freezeCount - 1 ? "2px 0 4px rgba(0,0,0,0.12)" : undefined,
+  } : {};
+
+  const renderUngroupedTh = (col, rowSpan, colIndex) => filterableCols.some(c => c.key === col.key) ? (
     <StatusFilterHeader
       key={col.key}
       label={col.label}
       options={filterOptionsByKey[col.key]}
       selected={columnFilters[col.key] || null}
       onChange={(next) => setColumnFilters(f => ({ ...f, [col.key]: next }))}
-      thStyle={{ ...thBase, background: C.surfaceAlt }}
+      thStyle={{ ...thBase, background: C.surfaceAlt, ...stickyStyle(colIndex, C.surfaceAlt) }}
       rowSpan={rowSpan}
     />
   ) : (
-    <th key={col.key} rowSpan={rowSpan} style={{ ...thBase, background: C.surfaceAlt }}>{col.label}</th>
+    <th key={col.key} rowSpan={rowSpan} style={{ ...thBase, background: C.surfaceAlt, ...stickyStyle(colIndex, C.surfaceAlt) }}>{col.label}</th>
   );
 
   // Rows where feedback was submitted but status isn't "completed" — see _statusDataMismatch in
@@ -4935,7 +4951,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                 <tr>
                   {segments.map((seg, i) => seg.group ? (
                     <th key={i} colSpan={seg.cols.length} style={{ ...thBase, textAlign: "center", background: seg.group.header, color: seg.group.headerText, border: `1px solid ${seg.group.header}` }}>{seg.group.name}</th>
-                  ) : renderUngroupedTh(seg.cols[0], 2))}
+                  ) : renderUngroupedTh(seg.cols[0], 2, columns.findIndex(c => c.key === seg.cols[0].key)))}
                 </tr>
                 <tr>
                   {segments.filter(seg => seg.group).flatMap((seg, si) => seg.cols.map((col, ci) => (
@@ -4945,7 +4961,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
               </>
             ) : (
               <tr style={{ background: C.surfaceAlt }}>
-                {columns.map(col => renderUngroupedTh(col))}
+                {columns.map((col, colIndex) => renderUngroupedTh(col, undefined, colIndex))}
               </tr>
             )}
           </thead>
@@ -4956,9 +4972,11 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   {rows.length === 0 ? `No data yet — this will populate from ${source}.` : "No rows match your search/filter."}
                 </td>
               </tr>
-            ) : pageRows.map((row, i) => (
-              <tr key={row.id ?? i} style={{ background: i % 2 === 0 ? "#fff" : C.surfaceAlt }}>
-                {columns.map(col => {
+            ) : pageRows.map((row, i) => {
+              const rowBg = i % 2 === 0 ? "#fff" : C.surfaceAlt;
+              return (
+              <tr key={row.id ?? i} style={{ background: rowBg }}>
+                {columns.map((col, colIndex) => {
                   const value = row[col.key];
                   const hasValue = value !== undefined && value !== null && value !== "";
                   // Interview Integrity Score shows just the number in the cell, but the
@@ -4981,7 +4999,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   return (
                     <td
                       key={col.key}
-                      style={{ ...tdBase, cursor: clickable ? "pointer" : "default" }}
+                      style={{ ...tdBase, cursor: clickable ? "pointer" : "default", ...stickyStyle(colIndex, rowBg) }}
                       title={clickable ? "Click to view full entry" : undefined}
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
@@ -5007,7 +5025,8 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   );
                 })}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
