@@ -4897,10 +4897,13 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
     left: colIndex * INTERVIEW_COL_WIDTH,
     zIndex: colIndex === freezeCount - 1 ? 3 : 2,
     background: bg,
-    // A plain drop shadow alone read as barely-there — a solid accent-colored border plus a
-    // stronger shadow makes the frozen/scrolling boundary obvious at a glance.
-    borderRight: colIndex === freezeCount - 1 ? `2px solid ${C.accent}` : undefined,
-    boxShadow: colIndex === freezeCount - 1 ? "3px 0 6px rgba(0,0,0,0.25)" : undefined,
+    // A real border-right disappears while scrolling: the table uses border-collapse, which
+    // merges each cell's border with its neighbor's and lets the (non-sticky, now-scrolling)
+    // neighbor's edge win as it slides underneath. An inset box-shadow paints inside the cell's
+    // own box instead of participating in that border-collapse resolution, so it stays put and
+    // stays on top (it's not a real border, just a same-color band along the inside edge) —
+    // combined with a soft drop shadow for depth.
+    boxShadow: colIndex === freezeCount - 1 ? `inset -3px 0 0 0 ${C.accent}, 3px 0 6px rgba(0,0,0,0.25)` : undefined,
   } : {};
 
   const renderUngroupedTh = (col, rowSpan, colIndex) => filterableCols.some(c => c.key === col.key) ? (
