@@ -5093,11 +5093,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  // TEMPORARY debug aid, 2026-09-15: clicking Candidate ID dumps the raw domains
-                  // payload so Backend Development's rubric field mapping can be confirmed
-                  // against real data, same as every other bucket. Remove once confirmed.
-                  const rawDomainsDebug = col.key === "candidateId" ? row._rawDomainsDebug : null;
-                  const clickable = hasValue || !!details || !!descriptor || !!rawDomainsDebug;
+                  const clickable = hasValue || !!details || !!descriptor;
                   // Data-mismatch warning: confirmed 2026-09-14 (Hitheesha, Frontend Development)
                   // that the Interview Coordinator App can leave a doc's feedbackSubmittedAt/
                   // domains/finalVerdict populated from an earlier attempt after the doc gets
@@ -5115,7 +5111,6 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
-                        : rawDomainsDebug ? { label: "Candidate ID — DEBUG (raw domains payload)", value: JSON.stringify(rawDomainsDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -5716,6 +5711,73 @@ function fillSweRubricColumns(row, iv) {
   return row;
 }
 
+// Backend Development's domain shape, confirmed against a real completed submission, 2026-09-15
+// (via the temporary rawDomainsDebug hook on Candidate ID) — same structural pattern as every
+// other bucket: domain keys match plain label-derivation, individual rating fields inside
+// cards[0] are opaque form-builder ids, remarks live as a field directly on the domain object.
+// Rating field ids for positions 1-6 are the same ids reused across every bucket so far
+// (field_3eoh7, field_dbwbp, field_kxtlr, field_qva7z, field_7ujo7, "question"). Position 7
+// (l4_production_backend) reuses "subject" — the same id SWE Fundamentals' 7th-position
+// Communication used. Position 8 (communication, an extra section Backend has that others don't)
+// gets a new id, field_n5acf.
+// field_gckbh (Communication's remarks here) is now CONFIRMED to be a real remarks-type field —
+// it was only inferred/unconfirmed when it turned up empty as SWE Fundamentals' Overall Remarks
+// candidate; this submission has a real value ("Good communication") for it under a different
+// domain, validating that inference after the fact (ids are evidently reused across
+// domains/templates by field-creation slot, not tied to one semantic meaning).
+// Overall Remarks here uses the plain semantic "domain_remarks" key WITH a real value present —
+// matching DSA's convention, unlike Frontend Development's/SWE's differently-shaped equivalents.
+const BACKEND_DOMAIN_KEYS = {
+  projectApiDeepDiveRating: "project_api_deep_dive", projectApiDeepDiveRemarks: "project_api_deep_dive",
+  l1BackendFoundationsRating: "l1_backend_foundations", l1BackendFoundationsRemarks: "l1_backend_foundations",
+  l1CrudEndpointTaskRating: "l1_crud_endpoint_task", l1CrudEndpointTaskRemarks: "l1_crud_endpoint_task",
+  l2DatabaseAuthRating: "l2_database_auth", l2DatabaseAuthRemarks: "l2_database_auth",
+  l2DebugFixTaskRating: "l2_debug_fix_task", l2DebugFixTaskRemarks: "l2_debug_fix_task",
+  l3BackendAdvancedRating: "l3_backend_advanced", l3BackendAdvancedRemarks: "l3_backend_advanced",
+  l4ProductionBackendRating: "l4_production_backend", l4ProductionBackendRemarks: "l4_production_backend",
+  communicationRating: "communication", communicationRemarks: "communication",
+};
+const BACKEND_RATING_FIELD_KEYS = {
+  projectApiDeepDiveRating: "field_3eoh7",
+  l1BackendFoundationsRating: "field_dbwbp",
+  l1CrudEndpointTaskRating: "field_kxtlr",
+  l2DatabaseAuthRating: "field_qva7z",
+  l2DebugFixTaskRating: "field_7ujo7",
+  l3BackendAdvancedRating: "question",
+  l4ProductionBackendRating: "subject",
+  communicationRating: "field_n5acf",
+};
+const BACKEND_REMARKS_FIELD_KEYS = {
+  projectApiDeepDiveRemarks: "field_xgu0v",
+  l1BackendFoundationsRemarks: "field_l8dsp",
+  l1CrudEndpointTaskRemarks: "field_p1aqs",
+  l2DatabaseAuthRemarks: "domain_remarks_7seab",
+  l2DebugFixTaskRemarks: "domain_remarks_wz845",
+  l3BackendAdvancedRemarks: "domain_remarks",
+  l4ProductionBackendRemarks: "domain_remarks",
+  communicationRemarks: "field_gckbh",
+};
+function fillBackendRubricColumns(row, iv) {
+  const domains = iv.domains || {};
+  for (const col of BACKEND_COLUMNS) {
+    if (!col.group || row[col.key] !== undefined) continue;
+    const domain = domains[BACKEND_DOMAIN_KEYS[col.key]] || {};
+    if (col.key.endsWith("Remarks")) {
+      const remarksFieldKey = BACKEND_REMARKS_FIELD_KEYS[col.key];
+      row[col.key] = remarksFieldKey ? (domain[remarksFieldKey] || "") : "";
+      continue;
+    }
+    row[col.key] = round2(domain.domain_rating ?? "");
+    const fieldKey = BACKEND_RATING_FIELD_KEYS[col.key];
+    const descriptor = domain.descriptors?.cards?.[0]?.[fieldKey];
+    if (descriptor) {
+      row._domainDescriptors = row._domainDescriptors || {};
+      row._domainDescriptors[col.key] = descriptor;
+    }
+  }
+  return row;
+}
+
 const ACADEMY_ROW_BUILDERS = {
   // Bucket A currently has no live data from the Interview Coordinator App and an unconfirmed
   // rubric naming convention (its groups don't follow the "Part N: ..." pattern used elsewhere) —
@@ -5834,27 +5896,26 @@ const ACADEMY_ROW_BUILDERS = {
       status: academyOutcomeStatus(iv, band),
     }, iv);
   },
-  // Unconfirmed rubric mapping — no real Interview App data checked yet, same starting point
-  // every other bucket began at. Falls back to generic fillRubricColumns label-derivation; a
-  // wrong/unconfirmed field key just renders "—", it won't show a fabricated number. Verdict Band
-  // uses backendVerdictBand (own cutoffs, given 2026-09-15); Levels has no criteria yet — user
-  // said to leave it blank for now, so it's not computed at all.
+  // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-15 —
+  // see fillBackendRubricColumns for what's different about this bucket's domain shape. Verdict
+  // Band uses backendVerdictBand (own cutoffs, given 2026-09-15); Levels has no criteria yet —
+  // user said to leave it blank for now, so it's not computed at all.
   "BACKEND:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
     const band = backendVerdictBand(finalScore);
     const common = academyCommonFields(iv);
-    return fillRubricColumns({
+    return fillBackendRubricColumns({
       ...common,
-      // TEMPORARY debug field, 2026-09-15 — see rawDomainsDebug in InterviewDataTable. Remove
-      // once Backend Development's rubric field mapping is confirmed.
-      _rawDomainsDebug: iv.domains || null,
-      overallRemarks: iv.remarks || "",
+      // Confirmed 2026-09-15: unlike Frontend Development/SWE, Backend Development's overall
+      // comment is at the plain semantic domains.overall_remarks.domain_remarks key, WITH a real
+      // value present (not empty) — matching DSA's convention. iv.remarks kept as a fallback.
+      overallRemarks: iv.domains?.overall_remarks?.domain_remarks || iv.remarks || "",
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
       verdict: common._statusDataMismatch ? "" : band,
       status: academyOutcomeStatus(iv, band),
-    }, iv, BACKEND_COLUMNS);
+    }, iv);
   },
 };
 
