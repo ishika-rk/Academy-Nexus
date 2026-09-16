@@ -5938,6 +5938,103 @@ const ACADEMY_ROW_BUILDERS = {
   },
 };
 
+// Slots shown in the stakeholder/ops stats overview at the top of the Interviews page.
+// "A:TR1" is deliberately excluded — its row builder above is a placeholder with no live
+// rubric data or clearance logic yet ("Bucket A currently has no live data from the
+// Interview Coordinator App"), so there's nothing real to summarize for it.
+const INTERVIEW_STATS_SLOTS = [
+  { slotKey: "B:TR1",    bucketId: "B",        subTab: "TR1", label: "Bucket B — TR1" },
+  { slotKey: "B:TR2",    bucketId: "B",        subTab: "TR2", label: "Bucket B — TR2" },
+  { slotKey: "C:",       bucketId: "C",        subTab: "",    label: "Bucket C" },
+  { slotKey: "FRONTEND:", bucketId: "FRONTEND", subTab: "",   label: "Frontend Development" },
+  { slotKey: "DSA:",     bucketId: "DSA",      subTab: "",    label: "Programming with Problem Solving (DSA)" },
+  { slotKey: "SWE:",     bucketId: "SWE",      subTab: "",    label: "Software Engineering Fundamentals" },
+  { slotKey: "BACKEND:", bucketId: "BACKEND",  subTab: "",    label: "Backend Development" },
+];
+
+// Tallies a built row set by a key, dropping blanks — used for Verdict Band and Levels so a
+// slot whose criteria haven't been defined yet (e.g. SWE/Backend Levels, see ACADEMY_ROW_BUILDERS
+// above) naturally reports no counts instead of a row full of zeros, and the overview can just
+// skip rendering that line for it.
+function tallyNonBlank(rows, key) {
+  const counts = {};
+  for (const r of rows) {
+    const v = r[key];
+    if (v === undefined || v === null || v === "") continue;
+    counts[v] = (counts[v] || 0) + 1;
+  }
+  return counts;
+}
+
+// Reuses the same per-slot row builder the table itself renders with, so Completed/Cleared/
+// Verdict/Levels counts can never drift from what someone sees when they click into the slot —
+// no separate copy of any clearance/verdict/level rule lives here.
+function computeSlotStats(academyInterviews, slotKey) {
+  const docs = academyInterviews.filter(iv => parseAcademySlot(iv.templateName) === slotKey);
+  const rows = docs.map(ACADEMY_ROW_BUILDERS[slotKey]);
+  return {
+    total: docs.length,
+    completed: docs.filter(d => d.status === "completed").length,
+    cleared: rows.filter(r => r.status === "Cleared").length,
+    notCleared: rows.filter(r => r.status === "Not Cleared").length,
+    verdictCounts: tallyNonBlank(rows, "verdict"),
+    levelsCounts: tallyNonBlank(rows, "levels"),
+  };
+}
+
+const VERDICT_BAND_ORDER = ["Strong Hire", "Medium Hire", "Low Hire", "Reject"];
+const VERDICT_BAND_COLOR = { "Strong Hire": "green", "Medium Hire": "blue", "Low Hire": "yellow", "Reject": "red" };
+
+function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 12, marginBottom: 24 }}>
+      {INTERVIEW_STATS_SLOTS.map(slot => {
+        const stats = computeSlotStats(academyInterviews, slot.slotKey);
+        const verdictEntries = VERDICT_BAND_ORDER.filter(b => stats.verdictCounts[b]);
+        const levelEntries = Object.keys(stats.levelsCounts).sort();
+        const pct = stats.total ? Math.round((stats.completed / stats.total) * 100) : 0;
+        return (
+          <button
+            key={slot.slotKey}
+            onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
+            style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", fontFamily: "inherit", display: "flex", flexDirection: "column", gap: 8 }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>{slot.label}</div>
+
+            <div>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+                <strong style={{ color: C.text, fontSize: 13 }}>{stats.completed}</strong> / {stats.total} completed
+              </div>
+              <div style={{ height: 5, background: C.surfaceAlt, borderRadius: 3, overflow: "hidden" }}>
+                <div style={{ width: `${pct}%`, height: "100%", background: C.accent, borderRadius: 3 }} />
+              </div>
+            </div>
+
+            {(stats.cleared > 0 || stats.notCleared > 0) && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {stats.cleared > 0 && <Badge color="green">Cleared {stats.cleared}</Badge>}
+                {stats.notCleared > 0 && <Badge color="red">Not Cleared {stats.notCleared}</Badge>}
+              </div>
+            )}
+
+            {verdictEntries.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {verdictEntries.map(b => <Badge key={b} color={VERDICT_BAND_COLOR[b]}>{b} {stats.verdictCounts[b]}</Badge>)}
+              </div>
+            )}
+
+            {levelEntries.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {levelEntries.map(l => <Badge key={l} color="orange">{l} {stats.levelsCounts[l]}</Badge>)}
+              </div>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function InterviewsPage() {
   const [bucketTab, setBucketTab] = useState("A");
   const [subTab, setSubTab] = useState("NxtMock");
@@ -5986,6 +6083,13 @@ function InterviewsPage() {
     setBucketTab(id);
     setSubTab(INTERVIEW_BUCKETS.find(b => b.id === id).subheaders[0] || "");
   };
+  // Unlike selectBucket (used by the tab bar, always lands on the bucket's first subheader),
+  // the stats overview cards need to jump straight to one specific sub-slot, e.g. Bucket B's
+  // TR2 card shouldn't land on TR1.
+  const jumpToSlot = (bucketId, slotSubTab) => {
+    setBucketTab(bucketId);
+    setSubTab(slotSubTab);
+  };
 
   // Derived from each doc's own `syncedAt` (written by api/ic-interviews.js on every pull sync)
   // rather than local component state, so "Last synced" survives page reloads and reflects
@@ -6017,6 +6121,8 @@ function InterviewsPage() {
       {syncBannerError && (
         <div style={{ marginBottom: 16, fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "10px 14px" }}>{syncBannerError}</div>
       )}
+
+      <InterviewStatsOverview academyInterviews={academyInterviews} onSelectSlot={jumpToSlot} />
 
       <div style={{ display: "flex", gap: 2, marginBottom: activeBucket.subheaders.length ? 12 : 24, borderBottom: `2px solid ${C.border}` }}>
         {INTERVIEW_BUCKETS.map(b => (
