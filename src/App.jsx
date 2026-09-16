@@ -62,15 +62,18 @@ const getExamCategoryHead = (e) => {
 // ─── Roles & Permissions ──────────────────────────────────────────────────────
 const PERMISSIONS = {
   super_admin: ["*"],
-  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "expenses.read"],
-  poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write", "expenses.read", "expenses.write"],
-  content:     ["exam.read", "student.count", "configs.write", "generate"],
+  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "results.read", "expenses.read", "interviews.read"],
+  poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write", "results.read", "expenses.read", "expenses.write", "interviews.read"],
+  content:     ["exam.read", "student.count", "configs.write", "generate", "results.read", "interviews.read"],
+  // Deliberately minimal by default — meant for roles scoped to a single tab (e.g. a POC who
+  // only handles post-offline interview coordination). Grant more via the Team & Roles matrix.
+  interview_poc: ["interviews.read"],
 };
 // Actions added after the settings/permissions doc was first seeded in Firestore — the
 // live doc only self-seeds from PERMISSIONS once (on first-ever creation), so any action
 // introduced later has to be topped up into an already-existing doc explicitly, or roles
 // other than super_admin silently never get it even though PERMISSIONS says they should.
-const NEW_PERMISSION_ACTIONS = ["expenses.read", "expenses.write"];
+const NEW_PERMISSION_ACTIONS = ["expenses.read", "expenses.write", "results.read", "interviews.read"];
 let activePermissions = { ...PERMISSIONS };
 function can(role, action) {
   const perms = activePermissions[role] || [];
@@ -6360,24 +6363,27 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
 // ─── Page: Team & Roles ───────────────────────────────────────────────────────
 
 const ROLE_OPTIONS = [
-  { value: "super_admin", label: "Super Admin",  desc: "Full access to everything" },
-  { value: "admin",       label: "Admin",         desc: "Manage exams, view student data, configs, generate" },
-  { value: "poc",         label: "POC",           desc: "Raise exam requests, upload student data, view configs" },
-  { value: "content",     label: "Content Team",  desc: "View exams, manage configs, generate assessments" },
+  { value: "super_admin",   label: "Super Admin",   desc: "Full access to everything" },
+  { value: "admin",         label: "Admin",          desc: "Manage exams, view student data, configs, generate" },
+  { value: "poc",           label: "POC",            desc: "Raise exam requests, upload student data, view configs" },
+  { value: "content",       label: "Content Team",   desc: "View exams, manage configs, generate assessments" },
+  { value: "interview_poc", label: "Interview POC",  desc: "Starts with Interviews-tab access only; grant more via the permissions matrix below" },
 ];
 
 const PERMISSION_ROWS = [
-  { group: "Exams",      action: "exam.read",    label: "View exams" },
+  { group: "Exams",      action: "exam.read",    label: "View exams (Exam Details tab)" },
   { group: "Exams",      action: "exam.write",   label: "Add / edit / delete exams" },
   { group: "Exams",      action: "exam.notify",  label: "Send exam notifications" },
   { group: "Students",   action: "student.read",  label: "View student data" },
   { group: "Students",   action: "student.write", label: "Upload student data" },
   { group: "Students",   action: "student.count", label: "View student count" },
-  { group: "Configs",    action: "configs.read",           label: "View configs" },
+  { group: "Configs",    action: "configs.read",           label: "View configs (Config Library tab)" },
   { group: "Configs",    action: "configs.write",          label: "Add / edit configs" },
   { group: "Configs",    action: "configs.assessmentLink", label: "Edit assessment links in Config Library" },
   { group: "Generation", action: "generate",      label: "Generate assessments" },
+  { group: "Results",    action: "results.read",  label: "View Results tab" },
   { group: "Results",    action: "results.write", label: "Import results / send to interview" },
+  { group: "Interviews", action: "interviews.read", label: "View Interviews tab" },
   { group: "Drive Expenses", action: "expenses.read",  label: "View drive expenses" },
   { group: "Drive Expenses", action: "expenses.write", label: "Add / edit / delete drive expenses" },
   { group: "Admin",      action: "team",          label: "Manage team & roles", superAdminOnly: true },
@@ -7037,11 +7043,24 @@ export default function App() {
   const upcomingCount = exams.filter(e => getExamStatus(e) === "upcoming").length;
   const role = currentUser?.role;
   const visibleNav = NAV.filter(n => {
-    if (n.id === "generate") return can(role, "generate");
-    if (n.id === "team")     return role === "super_admin";
-    if (n.id === "expenses") return can(role, "expenses.read");
+    if (n.id === "exams")      return can(role, "exam.read");
+    if (n.id === "configs")    return can(role, "configs.read") || can(role, "configs.write");
+    if (n.id === "generate")   return can(role, "generate");
+    if (n.id === "results")    return can(role, "results.read") || can(role, "results.write");
+    if (n.id === "interviews") return can(role, "interviews.read");
+    if (n.id === "expenses")   return can(role, "expenses.read");
+    if (n.id === "team")       return role === "super_admin";
     return true;
   });
+
+  // If the current page isn't in this role's visible nav (e.g. just switched roles, or the
+  // default "exams" page isn't accessible to a tab-restricted role), fall back to the first
+  // tab they do have access to instead of rendering a blank content area.
+  useEffect(() => {
+    if (role && visibleNav.length && !visibleNav.some(n => n.id === page)) {
+      setPage(visibleNav[0].id);
+    }
+  }, [role, page, visibleNav.map(n => n.id).join(",")]);
 
   if (currentUser === undefined) {
     return (
