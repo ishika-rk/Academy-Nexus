@@ -6714,6 +6714,7 @@ function LoginPage({ onSignIn, onRegister, onGoogleSignIn }) {
                 <option value="poc">POC Team</option>
                 <option value="admin">Admin</option>
                 <option value="content">Content Team</option>
+                <option value="interview_poc">Interview POC</option>
               </select>
             </div>
             {error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>}
