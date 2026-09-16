@@ -402,6 +402,12 @@ function friendlyAuthError(code) {
     "auth/network-request-failed": "Network error. Check your connection and try again.",
     "auth/operation-not-allowed": "Email/password sign-in is not enabled. Contact the super admin.",
     "auth/reregister-wrong-password": "This email is already registered. Enter the same password you used when you first registered.",
+    // Firestore (not Auth) error code, surfaced here because handleRegister reuses this same
+    // mapper for its catch. Hit when accessRequests/{email} already exists — most often because
+    // this email already has access (an admin approved it, or assigned a role directly) — since
+    // the security rules only let a non-admin *create* a new request, not overwrite an existing
+    // one. That's a signal worth naming instead of showing the raw Firestore code.
+    "permission-denied": "This email already has access or a pending request — try signing in instead.",
   };
   return map[code] || `Something went wrong (${code || "unknown"}). Please try again.`;
 }
