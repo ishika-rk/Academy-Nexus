@@ -5010,19 +5010,29 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
     boxShadow: colIndex === freezeCount - 1 ? `inset -3px 0 0 0 ${C.accent}, 3px 0 6px rgba(0,0,0,0.25)` : undefined,
   } : {};
 
-  const renderUngroupedTh = (col, rowSpan, colIndex) => filterableCols.some(c => c.key === col.key) ? (
-    <StatusFilterHeader
-      key={col.key}
-      label={col.label}
-      options={filterOptionsByKey[col.key]}
-      selected={columnFilters[col.key] || null}
-      onChange={(next) => setColumnFilters(f => ({ ...f, [col.key]: next }))}
-      thStyle={{ ...thBase, background: C.surfaceAlt, ...stickyStyle(colIndex, C.surfaceAlt) }}
-      rowSpan={rowSpan}
-    />
-  ) : (
-    <th key={col.key} rowSpan={rowSpan} style={{ ...thBase, background: C.surfaceAlt, ...stickyStyle(colIndex, C.surfaceAlt) }}>{col.label}</th>
-  );
+  // Final Score, Interview Integrity Score, Verdict Band, Clearance Status, and Levels are the
+  // columns someone actually scans a row for — the outcome, not the raw rubric inputs. Called out
+  // with the app's accent color instead of the same flat gray as every other header so they don't
+  // get lost among dozens of rubric columns.
+  const OUTCOME_KEYS = ["finalScore", "interviewIntegrityScore", "verdict", "status", "finalStatus", "levels"];
+  const renderUngroupedTh = (col, rowSpan, colIndex) => {
+    const isOutcome = OUTCOME_KEYS.includes(col.key);
+    const bg = isOutcome ? C.accentLight : C.surfaceAlt;
+    const outcomeStyle = isOutcome ? { color: C.accentDark } : {};
+    return filterableCols.some(c => c.key === col.key) ? (
+      <StatusFilterHeader
+        key={col.key}
+        label={col.label}
+        options={filterOptionsByKey[col.key]}
+        selected={columnFilters[col.key] || null}
+        onChange={(next) => setColumnFilters(f => ({ ...f, [col.key]: next }))}
+        thStyle={{ ...thBase, background: bg, ...outcomeStyle, ...stickyStyle(colIndex, bg) }}
+        rowSpan={rowSpan}
+      />
+    ) : (
+      <th key={col.key} rowSpan={rowSpan} style={{ ...thBase, background: bg, ...outcomeStyle, ...stickyStyle(colIndex, bg) }}>{col.label}</th>
+    );
+  };
 
   // Rows where feedback was submitted but status isn't "completed" — see _statusDataMismatch in
   // academyCommonFields. Surfaced here as a table-level summary (in addition to the per-row ⚠️ on
