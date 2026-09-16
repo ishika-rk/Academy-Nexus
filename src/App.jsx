@@ -5985,52 +5985,92 @@ function computeSlotStats(academyInterviews, slotKey) {
 const VERDICT_BAND_ORDER = ["Strong Hire", "Medium Hire", "Low Hire", "Reject"];
 const VERDICT_BAND_COLOR = { "Strong Hire": "green", "Medium Hire": "blue", "Low Hire": "yellow", "Reject": "red" };
 
+// One row per slot instead of one card per slot — scales to however many interview types get
+// added later (just more rows in a scrollable table) instead of an ever-growing wall of cards,
+// and gives Clearance / Verdict Band / Levels their own columns instead of badges piled
+// together with no way to tell which stat is which.
 function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
+  const [expanded, setExpanded] = useState(true);
+  const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "7px 12px", borderBottom: `1px solid ${C.border}` };
+  const tdStyle = { padding: "8px 12px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 12, marginBottom: 24 }}>
-      {INTERVIEW_STATS_SLOTS.map(slot => {
-        const stats = computeSlotStats(academyInterviews, slot.slotKey);
-        const verdictEntries = VERDICT_BAND_ORDER.filter(b => stats.verdictCounts[b]);
-        const levelEntries = Object.keys(stats.levelsCounts).sort();
-        const pct = stats.total ? Math.round((stats.completed / stats.total) * 100) : 0;
-        return (
-          <button
-            key={slot.slotKey}
-            onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
-            style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px", cursor: "pointer", fontFamily: "inherit", display: "flex", flexDirection: "column", gap: 8 }}
-          >
-            <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>{slot.label}</div>
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 24, overflow: "hidden" }}>
+      <button
+        onClick={() => setExpanded(e => !e)}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surfaceAlt, border: "none", padding: "10px 14px", cursor: "pointer", fontFamily: "inherit" }}
+      >
+        <span style={{ fontSize: 12, fontWeight: 800, color: C.text }}>Status Overview</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", alignItems: "center", gap: 4 }}>
+          {expanded ? "Hide" : "Show"}
+          <span style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
+        </span>
+      </button>
 
-            <div>
-              <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
-                <strong style={{ color: C.text, fontSize: 13 }}>{stats.completed}</strong> / {stats.total} completed
-              </div>
-              <div style={{ height: 5, background: C.surfaceAlt, borderRadius: 3, overflow: "hidden" }}>
-                <div style={{ width: `${pct}%`, height: "100%", background: C.accent, borderRadius: 3 }} />
-              </div>
-            </div>
-
-            {(stats.cleared > 0 || stats.notCleared > 0) && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {stats.cleared > 0 && <Badge color="green">Cleared {stats.cleared}</Badge>}
-                {stats.notCleared > 0 && <Badge color="red">Not Cleared {stats.notCleared}</Badge>}
-              </div>
-            )}
-
-            {verdictEntries.length > 0 && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {verdictEntries.map(b => <Badge key={b} color={VERDICT_BAND_COLOR[b]}>{b} {stats.verdictCounts[b]}</Badge>)}
-              </div>
-            )}
-
-            {levelEntries.length > 0 && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {levelEntries.map(l => <Badge key={l} color="orange">{l} {stats.levelsCounts[l]}</Badge>)}
-              </div>
-            )}
-          </button>
-        );
-      })}
+      {expanded && (
+        <>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Bucket / Round</th>
+                  <th style={thStyle}>Completed</th>
+                  <th style={thStyle}>Clearance</th>
+                  <th style={thStyle}>Verdict Band</th>
+                  <th style={thStyle}>Levels</th>
+                </tr>
+              </thead>
+              <tbody>
+                {INTERVIEW_STATS_SLOTS.map(slot => {
+                  const stats = computeSlotStats(academyInterviews, slot.slotKey);
+                  const verdictEntries = VERDICT_BAND_ORDER.filter(b => stats.verdictCounts[b]);
+                  const levelEntries = Object.keys(stats.levelsCounts).sort();
+                  return (
+                    <tr
+                      key={slot.slotKey}
+                      onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
+                      style={{ cursor: "pointer" }}
+                      onMouseEnter={e => e.currentTarget.style.background = C.surfaceAlt}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                    >
+                      <td style={{ ...tdStyle, fontWeight: 700, color: C.text, whiteSpace: "nowrap" }}>{slot.label}</td>
+                      <td style={tdStyle}>
+                        <strong style={{ color: C.text }}>{stats.completed}</strong>
+                        <span style={{ color: C.muted }}> / {stats.total} synced</span>
+                      </td>
+                      <td style={tdStyle}>
+                        {stats.cleared === 0 && stats.notCleared === 0 ? <span style={{ color: C.muted }}>—</span> : (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {stats.cleared > 0 && <Badge color="green">Cleared {stats.cleared}</Badge>}
+                            {stats.notCleared > 0 && <Badge color="red">Not Cleared {stats.notCleared}</Badge>}
+                          </div>
+                        )}
+                      </td>
+                      <td style={tdStyle}>
+                        {verdictEntries.length === 0 ? <span style={{ color: C.muted }}>—</span> : (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {verdictEntries.map(b => <Badge key={b} color={VERDICT_BAND_COLOR[b]}>{b} {stats.verdictCounts[b]}</Badge>)}
+                          </div>
+                        )}
+                      </td>
+                      <td style={tdStyle}>
+                        {levelEntries.length === 0 ? <span style={{ color: C.muted }}>—</span> : (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {levelEntries.map(l => <Badge key={l} color="orange">{l} {stats.levelsCounts[l]}</Badge>)}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 10.5, color: C.muted, padding: "8px 14px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
+            "Completed / synced" counts interview attempts pulled from the Interview Coordinator App, not unique candidates — a candidate can have more than one attempt (retries, re-scheduled rounds). Click a row to open that table.
+          </div>
+        </>
+      )}
     </div>
   );
 }
