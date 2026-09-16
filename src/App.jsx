@@ -6835,18 +6835,22 @@ export default function App() {
       onSnapshot(doc(db, "settings", "permissions"), snap => {
         let data = snap.exists() ? snap.data() : PERMISSIONS;
         if (!snap.exists()) {
-          setDoc(doc(db, "settings", "permissions"), PERMISSIONS);
+          data = { ...PERMISSIONS, _toppedUp: NEW_PERMISSION_ACTIONS };
+          setDoc(doc(db, "settings", "permissions"), data);
         } else {
-          let changed = false;
-          const topped = {};
-          for (const role of Object.keys(PERMISSIONS)) {
-            const current = data[role] || [];
-            const missing = current.includes("*") ? [] : NEW_PERMISSION_ACTIONS.filter(a => !current.includes(a));
-            topped[role] = missing.length ? [...current, ...missing] : current;
-            if (missing.length) changed = true;
-          }
-          if (changed) {
-            data = { ...data, ...topped };
+          // Only top up an action the FIRST time it's ever seen (tracked in _toppedUp) —
+          // otherwise a role that's missing an action forever looks "missing" and gets it
+          // re-added on every snapshot, silently undoing an admin's manual revoke.
+          const seeded = data._toppedUp || [];
+          const pending = NEW_PERMISSION_ACTIONS.filter(a => !seeded.includes(a));
+          if (pending.length) {
+            const topped = {};
+            for (const role of Object.keys(PERMISSIONS)) {
+              const current = data[role] || [];
+              const missing = current.includes("*") ? [] : pending.filter(a => !current.includes(a));
+              topped[role] = missing.length ? [...current, ...missing] : current;
+            }
+            data = { ...data, ...topped, _toppedUp: [...seeded, ...pending] };
             setDoc(doc(db, "settings", "permissions"), data, { merge: true });
           }
         }
