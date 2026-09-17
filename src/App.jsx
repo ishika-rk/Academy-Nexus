@@ -5651,6 +5651,27 @@ function dsaLevel(row) {
   return "Below L2";
 }
 
+// Software Engineering Fundamentals' Levels tier, rule given 2026-09-17:
+//   L3        coreCsFundamentals>=2.5 AND sqlQueryTask>=2.5 AND oopConcepts>=2.5 AND
+//             oopDesignTask>=2.5 AND softwareDesignCleanCode>=2.5 AND codeReviewExercise>=2.5
+//   L2   else coreCsFundamentals>=2.5 AND sqlQueryTask>=2.5 AND oopConcepts>=2.5 AND oopDesignTask>=2.5
+//   L1   else coreCsFundamentals>=2.5 AND sqlQueryTask>=2.5
+//   Below L1  otherwise
+// Blank if any of the six domain ratings is missing — checked explicitly against ""/null/
+// undefined (not just falsy) since 0 is a real, valid rating.
+function sweLevel(row) {
+  const vals = [
+    row.coreCsFundamentalsRating, row.sqlQueryTaskRating, row.oopConceptsRating,
+    row.oopDesignTaskRating, row.softwareDesignCleanCodeRating, row.codeReviewExerciseRating,
+  ];
+  if (vals.some(v => v === "" || v === null || v === undefined)) return "";
+  const [coreCs, sql, oopConcepts, oopDesign, swDesign, codeReview] = vals.map(Number);
+  if (coreCs >= 2.5 && sql >= 2.5 && oopConcepts >= 2.5 && oopDesign >= 2.5 && swDesign >= 2.5 && codeReview >= 2.5) return "L3";
+  if (coreCs >= 2.5 && sql >= 2.5 && oopConcepts >= 2.5 && oopDesign >= 2.5) return "L2";
+  if (coreCs >= 2.5 && sql >= 2.5) return "L1";
+  return "Below L1";
+}
+
 function fillDsaRubricColumns(row, iv) {
   const domains = iv.domains || {};
   for (const col of DSA_COLUMNS) {
@@ -5735,6 +5756,7 @@ function fillSweRubricColumns(row, iv) {
       row._domainDescriptors[col.key] = descriptor;
     }
   }
+  row.levels = sweLevel(row);
   return row;
 }
 
@@ -5903,13 +5925,16 @@ const ACADEMY_ROW_BUILDERS = {
   // uses its own SWE-specific cutoffs (sweVerdictBand), given 2026-09-15 — NOT the same cutoffs
   // as Frontend Development/DSA's verdictBand, don't assume the two stay in sync. Clearance
   // Status still reuses the shared academyOutcomeStatus formula (Strong/Medium Hire -> Cleared,
-  // Low Hire/Reject -> Not Cleared), just fed this bucket's own band. Levels has no criteria yet,
-  // so it's not computed at all.
+  // Low Hire/Reject -> Not Cleared), just fed this bucket's own band. Levels (sweLevel) uses its
+  // own criteria given 2026-09-17 — NOT the same rule as Frontend Development's frontendDevLevel
+  // or DSA's dsaLevel.
   "SWE:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
     const band = sweVerdictBand(finalScore);
     const common = academyCommonFields(iv);
-    return fillSweRubricColumns({
+    // See the matching comment in "FRONTEND:" — don't compute Verdict Band or Levels for a row
+    // flagged _statusDataMismatch.
+    const row = fillSweRubricColumns({
       ...common,
       // The flat feedback.comments field (iv.remarks) is unpopulated on the one submission
       // checked so far — same pattern as Frontend Development/DSA. domains.overall_remarks.
@@ -5922,6 +5947,8 @@ const ACADEMY_ROW_BUILDERS = {
       verdict: common._statusDataMismatch ? "" : band,
       status: academyOutcomeStatus(iv, band),
     }, iv);
+    if (common._statusDataMismatch) row.levels = "";
+    return row;
   },
   // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-15 —
   // see fillBackendRubricColumns for what's different about this bucket's domain shape. Verdict
