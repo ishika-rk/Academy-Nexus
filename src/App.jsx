@@ -5806,6 +5806,32 @@ const BACKEND_REMARKS_FIELD_KEYS = {
   l4ProductionBackendRemarks: "domain_remarks",
   communicationRemarks: "field_gckbh",
 };
+
+// Backend Development's Levels tier, rule given 2026-09-17:
+//   L4        backendFoundations>=2.5 AND crudEndpointTask>=2.5 AND databaseAuth>=2.5 AND
+//             debugFixTask>=2.5 AND backendAdvanced>=2.5 AND productionBackend>=2.5
+//   L3   else backendFoundations>=2.5 AND crudEndpointTask>=2.5 AND databaseAuth>=2.5 AND
+//             debugFixTask>=2.5 AND backendAdvanced>=2.5
+//   L2   else backendFoundations>=2.5 AND crudEndpointTask>=2.5 AND databaseAuth>=2.5 AND debugFixTask>=2.5
+//   L1   else backendFoundations>=2.5 AND crudEndpointTask>=2.5
+//   Below L1  otherwise
+// Blank if any of the six domain ratings is missing (including productionBackend, even though
+// L1-L3 don't check it directly — the blank rule spans all six per the given criteria) —
+// checked explicitly against ""/null/undefined (not just falsy) since 0 is a real, valid rating.
+function backendLevel(row) {
+  const vals = [
+    row.l1BackendFoundationsRating, row.l1CrudEndpointTaskRating, row.l2DatabaseAuthRating,
+    row.l2DebugFixTaskRating, row.l3BackendAdvancedRating, row.l4ProductionBackendRating,
+  ];
+  if (vals.some(v => v === "" || v === null || v === undefined)) return "";
+  const [foundations, crud, dbAuth, debugFix, advanced, production] = vals.map(Number);
+  if (foundations >= 2.5 && crud >= 2.5 && dbAuth >= 2.5 && debugFix >= 2.5 && advanced >= 2.5 && production >= 2.5) return "L4";
+  if (foundations >= 2.5 && crud >= 2.5 && dbAuth >= 2.5 && debugFix >= 2.5 && advanced >= 2.5) return "L3";
+  if (foundations >= 2.5 && crud >= 2.5 && dbAuth >= 2.5 && debugFix >= 2.5) return "L2";
+  if (foundations >= 2.5 && crud >= 2.5) return "L1";
+  return "Below L1";
+}
+
 function fillBackendRubricColumns(row, iv) {
   const domains = iv.domains || {};
   for (const col of BACKEND_COLUMNS) {
@@ -5824,6 +5850,7 @@ function fillBackendRubricColumns(row, iv) {
       row._domainDescriptors[col.key] = descriptor;
     }
   }
+  row.levels = backendLevel(row);
   return row;
 }
 
@@ -5952,13 +5979,15 @@ const ACADEMY_ROW_BUILDERS = {
   },
   // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-15 —
   // see fillBackendRubricColumns for what's different about this bucket's domain shape. Verdict
-  // Band uses backendVerdictBand (own cutoffs, given 2026-09-15); Levels has no criteria yet —
-  // user said to leave it blank for now, so it's not computed at all.
+  // Band uses backendVerdictBand (own cutoffs, given 2026-09-15). Levels (backendLevel) uses its
+  // own criteria given 2026-09-17 — NOT the same rule as any other bucket's Levels function.
   "BACKEND:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
     const band = backendVerdictBand(finalScore);
     const common = academyCommonFields(iv);
-    return fillBackendRubricColumns({
+    // See the matching comment in "FRONTEND:" — don't compute Verdict Band or Levels for a row
+    // flagged _statusDataMismatch.
+    const row = fillBackendRubricColumns({
       ...common,
       // Confirmed 2026-09-15: unlike Frontend Development/SWE, Backend Development's overall
       // comment is at the plain semantic domains.overall_remarks.domain_remarks key, WITH a real
@@ -5970,6 +5999,8 @@ const ACADEMY_ROW_BUILDERS = {
       verdict: common._statusDataMismatch ? "" : band,
       status: academyOutcomeStatus(iv, band),
     }, iv);
+    if (common._statusDataMismatch) row.levels = "";
+    return row;
   },
 };
 
