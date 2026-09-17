@@ -4519,6 +4519,10 @@ function ExpensesPage({ exams, expenses, onSaveExpense, onDeleteExpense, role })
 // from the Interview App. Both are wired later.
 
 const INTERVIEW_BUCKETS = [
+  // Lives in the same tab bar as every bucket rather than a separate collapsible panel above
+  // it — one navigation idiom instead of two, and it costs zero space once someone has picked
+  // an actual bucket to look at.
+  { id: "OVERVIEW", label: "Overview", subheaders: [] },
   { id: "A", label: "Bucket A", subheaders: ["NxtMock", "TR1", "TR2"] },
   { id: "B", label: "Bucket B", subheaders: ["TR1", "TR2"] },
   { id: "C", label: "Bucket C", subheaders: [] },
@@ -5982,102 +5986,134 @@ function computeSlotStats(academyInterviews, slotKey) {
   };
 }
 
+// Strong Hire -> Reject reads as a recommendation quality scale, not four unrelated categories,
+// so it gets a traffic-light order (green -> amber/red) rather than arbitrary categorical hues —
+// a reader shouldn't need the legend to guess which end is "good".
 const VERDICT_BAND_ORDER = ["Strong Hire", "Medium Hire", "Low Hire", "Reject"];
-const VERDICT_BAND_COLOR = { "Strong Hire": "green", "Medium Hire": "blue", "Low Hire": "yellow", "Reject": "red" };
+const VERDICT_BAND_HEX = { "Strong Hire": C.green, "Medium Hire": C.blue, "Low Hire": C.yellow, "Reject": C.red };
 
-// One row per slot instead of one card per slot — scales to however many interview types get
-// added later (just more rows in a scrollable table) instead of an ever-growing wall of cards,
-// and gives Clearance / Verdict Band / Levels their own columns instead of badges piled
-// together with no way to tell which stat is which.
+// Levels (skill tier) is ordinal but not good/bad the way Verdict Band is — "Below L1" isn't a
+// failure the way "Reject" is, just an earlier rung — so it gets one sequential hue stepped
+// light -> dark by rank instead of borrowing the traffic-light colors. accentLight -> accentDark.
+const LEVELS_RAMP = ["#f5ebe3", "#eccbb0", "#e0a878", "#d1792f", "#b8531a", "#8a3a0c"];
+function rampColor(ramp, index, count) {
+  if (count <= 1) return ramp[ramp.length - 1];
+  return ramp[Math.round((index / (count - 1)) * (ramp.length - 1))];
+}
+
+// A compact 100%-stacked bar + a co-located legend line (colored dot + label + exact count) —
+// the dot carries identity, the text stays in ink color rather than the segment's hue (a light
+// segment color, e.g. the yellow Verdict Band step, would be unreadable as text). Hovering a
+// segment shows its exact share via the native title tooltip. Segments already carry >0 values.
+function StackedBar({ segments, width = 150 }) {
+  const total = segments.reduce((s, seg) => s + seg.value, 0);
+  if (total === 0) return <span style={{ color: C.muted, fontSize: 11 }}>—</span>;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <div style={{ display: "flex", width, height: 14, borderRadius: 7, overflow: "hidden" }}>
+        {segments.map((seg, i) => (
+          <div
+            key={seg.label}
+            title={`${seg.label}: ${seg.value} (${Math.round((seg.value / total) * 100)}%)`}
+            style={{
+              width: `${(seg.value / total) * 100}%`,
+              background: seg.color,
+              boxShadow: i < segments.length - 1 ? `inset -2px 0 0 0 ${C.surface}` : "none",
+            }}
+          />
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
+        {segments.map(seg => (
+          <span key={seg.label} style={{ fontSize: 10.5, color: C.muted, display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: seg.color, display: "inline-block", flexShrink: 0 }} />
+            {seg.label} <strong style={{ color: C.text }}>{seg.value}</strong>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CompletedCount({ completed }) {
+  return <strong style={{ fontSize: 13, color: C.text }}>{completed}</strong>;
+}
+
+// Lives on its own "Overview" tab (see INTERVIEW_BUCKETS) rather than a panel stacked above the
+// per-bucket table, so it costs zero space once someone has actually picked a bucket to look at,
+// and reuses the tab bar's own navigation instead of teaching a second (expand/collapse) one.
+// One row per slot rather than one card per slot scales to however many interview types get
+// added later (just more table rows), and Clearance / Verdict Band / Levels each get their own
+// column instead of badges piled together with no way to tell which stat is which.
 function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
-  const [expanded, setExpanded] = useState(true);
-  const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "7px 12px", borderBottom: `1px solid ${C.border}` };
-  const tdStyle = { padding: "8px 12px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
+  const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 14px", borderBottom: `1px solid ${C.border}` };
+  const tdStyle = { padding: "12px 14px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
 
   return (
-    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 24, overflow: "hidden" }}>
-      <button
-        onClick={() => setExpanded(e => !e)}
-        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surfaceAlt, border: "none", padding: "10px 14px", cursor: "pointer", fontFamily: "inherit" }}
-      >
-        <span style={{ fontSize: 12, fontWeight: 800, color: C.text }}>Status Overview</span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", alignItems: "center", gap: 4 }}>
-          {expanded ? "Hide" : "Show"}
-          <span style={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▾</span>
-        </span>
-      </button>
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>Completion & outcomes, by bucket</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Click a row to open that bucket's table.</div>
+      </div>
 
-      {expanded && (
-        <>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Bucket / Round</th>
-                  <th style={thStyle}>Completed</th>
-                  <th style={thStyle}>Clearance</th>
-                  <th style={thStyle}>Verdict Band</th>
-                  <th style={thStyle}>Levels</th>
-                </tr>
-              </thead>
-              <tbody>
-                {INTERVIEW_STATS_SLOTS.map(slot => {
-                  const stats = computeSlotStats(academyInterviews, slot.slotKey);
-                  const verdictEntries = VERDICT_BAND_ORDER.filter(b => stats.verdictCounts[b]);
-                  const levelEntries = Object.keys(stats.levelsCounts).sort();
-                  return (
-                    <tr
-                      key={slot.slotKey}
-                      onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
-                      style={{ cursor: "pointer" }}
-                      onMouseEnter={e => e.currentTarget.style.background = C.surfaceAlt}
-                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                    >
-                      <td style={{ ...tdStyle, fontWeight: 700, color: C.text, whiteSpace: "nowrap" }}>{slot.label}</td>
-                      <td style={tdStyle}>
-                        <strong style={{ color: C.text }}>{stats.completed}</strong>
-                        <span style={{ color: C.muted }}> / {stats.total} synced</span>
-                      </td>
-                      <td style={tdStyle}>
-                        {stats.cleared === 0 && stats.notCleared === 0 ? <span style={{ color: C.muted }}>—</span> : (
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {stats.cleared > 0 && <Badge color="green">Cleared {stats.cleared}</Badge>}
-                            {stats.notCleared > 0 && <Badge color="red">Not Cleared {stats.notCleared}</Badge>}
-                          </div>
-                        )}
-                      </td>
-                      <td style={tdStyle}>
-                        {verdictEntries.length === 0 ? <span style={{ color: C.muted }}>—</span> : (
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {verdictEntries.map(b => <Badge key={b} color={VERDICT_BAND_COLOR[b]}>{b} {stats.verdictCounts[b]}</Badge>)}
-                          </div>
-                        )}
-                      </td>
-                      <td style={tdStyle}>
-                        {levelEntries.length === 0 ? <span style={{ color: C.muted }}>—</span> : (
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {levelEntries.map(l => <Badge key={l} color="orange">{l} {stats.levelsCounts[l]}</Badge>)}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ fontSize: 10.5, color: C.muted, padding: "8px 14px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
-            "Completed / synced" counts interview attempts pulled from the Interview Coordinator App, not unique candidates — a candidate can have more than one attempt (retries, re-scheduled rounds). Click a row to open that table.
-          </div>
-        </>
-      )}
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: C.surfaceAlt }}>
+                <th style={thStyle}>Bucket / Round</th>
+                <th style={thStyle}>Completed</th>
+                <th style={thStyle}>Clearance</th>
+                <th style={thStyle}>Verdict Band</th>
+                <th style={thStyle}>Levels</th>
+              </tr>
+            </thead>
+            <tbody>
+              {INTERVIEW_STATS_SLOTS.map(slot => {
+                const stats = computeSlotStats(academyInterviews, slot.slotKey);
+                const verdictSegments = VERDICT_BAND_ORDER
+                  .filter(b => stats.verdictCounts[b])
+                  .map(b => ({ label: b, value: stats.verdictCounts[b], color: VERDICT_BAND_HEX[b] }));
+                const levelKeys = Object.keys(stats.levelsCounts).sort();
+                const levelSegments = levelKeys.map((l, i) => ({ label: l, value: stats.levelsCounts[l], color: rampColor(LEVELS_RAMP, i, levelKeys.length) }));
+                return (
+                  <tr
+                    key={slot.slotKey}
+                    onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
+                    style={{ cursor: "pointer" }}
+                    onMouseEnter={e => e.currentTarget.style.background = C.surfaceAlt}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                  >
+                    <td style={{ ...tdStyle, fontWeight: 700, color: C.text, whiteSpace: "nowrap" }}>{slot.label}</td>
+                    <td style={tdStyle}><CompletedCount completed={stats.completed} /></td>
+                    <td style={tdStyle}>
+                      <StackedBar segments={[
+                        { label: "Cleared", value: stats.cleared, color: C.green },
+                        { label: "Not Cleared", value: stats.notCleared, color: C.red },
+                      ]} />
+                    </td>
+                    <td style={tdStyle}>{verdictSegments.length === 0 ? <span style={{ color: C.muted }}>—</span> : <StackedBar segments={verdictSegments} />}</td>
+                    <td style={tdStyle}>{levelSegments.length === 0 ? <span style={{ color: C.muted }}>—</span> : <StackedBar segments={levelSegments} />}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 10.5, color: C.muted, padding: "8px 14px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
+          "Completed" counts interview attempts pulled from the Interview Coordinator App, not unique candidates — a candidate can have more than one attempt (retries, re-scheduled rounds).
+        </div>
+      </div>
     </div>
   );
 }
 
 function InterviewsPage() {
-  const [bucketTab, setBucketTab] = useState("A");
-  const [subTab, setSubTab] = useState("NxtMock");
+  // Overview is the landing tab — it's also a fix, not just a preference: "A" (the old default)
+  // lands on Bucket A / NxtMock, which has no live data wired up at all (see ACADEMY_ROW_BUILDERS),
+  // so every fresh visit used to open on an empty table.
+  const [bucketTab, setBucketTab] = useState("OVERVIEW");
+  const [subTab, setSubTab] = useState("");
   const activeBucket = INTERVIEW_BUCKETS.find(b => b.id === bucketTab);
   const activeTable = INTERVIEW_TABLE_COLUMNS[`${bucketTab}:${subTab}`];
 
@@ -6162,32 +6198,36 @@ function InterviewsPage() {
         <div style={{ marginBottom: 16, fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "10px 14px" }}>{syncBannerError}</div>
       )}
 
-      <InterviewStatsOverview academyInterviews={academyInterviews} onSelectSlot={jumpToSlot} />
-
       <div style={{ display: "flex", gap: 2, marginBottom: activeBucket.subheaders.length ? 12 : 24, borderBottom: `2px solid ${C.border}` }}>
         {INTERVIEW_BUCKETS.map(b => (
           <button key={b.id} onClick={() => selectBucket(b.id)} style={{ background: "none", border: "none", borderBottom: `2px solid ${bucketTab === b.id ? C.accent : "transparent"}`, marginBottom: -2, padding: "8px 14px", width: 140, flexShrink: 0, whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", textAlign: "center", lineHeight: 1.3, fontSize: 13, fontWeight: 700, cursor: "pointer", color: bucketTab === b.id ? C.accent : C.muted, fontFamily: "inherit", transition: "all 0.15s" }}>{b.label}</button>
         ))}
       </div>
 
-      {activeBucket.subheaders.length > 0 && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
-          {activeBucket.subheaders.map(s => (
-            <button key={s} onClick={() => setSubTab(s)} style={{ background: subTab === s ? C.accentLight : C.surface, border: `1px solid ${subTab === s ? C.accent : C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", color: subTab === s ? C.accent : C.muted, fontFamily: "inherit" }}>{s}</button>
-          ))}
-        </div>
-      )}
-
-      {activeTable ? (
-        <InterviewDataTable
-          key={`${bucketTab}:${subTab}`}
-          columns={activeTable.columns}
-          rows={activeRows}
-          source={activeTable.source}
-          exportLabel={`${activeBucket.label}${subTab ? ` - ${subTab}` : ""}`.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "")}
-        />
+      {bucketTab === "OVERVIEW" ? (
+        <InterviewStatsOverview academyInterviews={academyInterviews} onSelectSlot={jumpToSlot} />
       ) : (
-        <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
+        <>
+          {activeBucket.subheaders.length > 0 && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+              {activeBucket.subheaders.map(s => (
+                <button key={s} onClick={() => setSubTab(s)} style={{ background: subTab === s ? C.accentLight : C.surface, border: `1px solid ${subTab === s ? C.accent : C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", color: subTab === s ? C.accent : C.muted, fontFamily: "inherit" }}>{s}</button>
+              ))}
+            </div>
+          )}
+
+          {activeTable ? (
+            <InterviewDataTable
+              key={`${bucketTab}:${subTab}`}
+              columns={activeTable.columns}
+              rows={activeRows}
+              source={activeTable.source}
+              exportLabel={`${activeBucket.label}${subTab ? ` - ${subTab}` : ""}`.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "")}
+            />
+          ) : (
+            <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
+          )}
+        </>
       )}
     </div>
   );
