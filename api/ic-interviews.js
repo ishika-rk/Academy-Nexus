@@ -77,10 +77,29 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
+  let user;
   try {
-    await requireUser(req);
+    user = await requireUser(req);
   } catch (err) {
     return res.status(err.statusCode || 401).json({ ok: false, error: err.message });
+  }
+
+  // Sync is restricted (Admin/Super Admin by default, adjustable via the Team & Roles
+  // permissions matrix) — the UI already hides the "Sync Now" button for anyone without
+  // interviews.sync, but that's cosmetic on its own; this is the actual enforcement, since
+  // this endpoint could otherwise be called directly with any signed-in user's token.
+  try {
+    const roleSnap = await adminDb.collection("roles").doc(user.email).get();
+    const role = roleSnap.data()?.role;
+    const permsSnap = await adminDb.collection("settings").doc("permissions").get();
+    const perms = permsSnap.data()?.[role] || [];
+    const allowed = perms.includes("*") || perms.includes("interviews.sync");
+    if (!allowed) {
+      return res.status(403).json({ ok: false, error: "You don't have permission to sync interviews." });
+    }
+  } catch (err) {
+    console.error("ic-interviews permission check error:", err);
+    return res.status(500).json({ ok: false, error: "Failed to verify permissions" });
   }
 
   if (!process.env.IC_SA_B64) {

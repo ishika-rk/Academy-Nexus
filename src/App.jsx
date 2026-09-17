@@ -62,7 +62,7 @@ const getExamCategoryHead = (e) => {
 // ─── Roles & Permissions ──────────────────────────────────────────────────────
 const PERMISSIONS = {
   super_admin: ["*"],
-  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "results.read", "expenses.read", "interviews.read"],
+  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "results.read", "expenses.read", "interviews.read", "interviews.sync"],
   poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write", "results.read", "expenses.read", "expenses.write", "interviews.read"],
   content:     ["exam.read", "student.count", "configs.write", "generate", "results.read", "interviews.read"],
   // Deliberately minimal by default — meant for roles scoped to a single tab (e.g. a POC who
@@ -73,6 +73,10 @@ const PERMISSIONS = {
 // live doc only self-seeds from PERMISSIONS once (on first-ever creation), so any action
 // introduced later has to be topped up into an already-existing doc explicitly, or roles
 // other than super_admin silently never get it even though PERMISSIONS says they should.
+// interviews.sync deliberately NOT listed here — the top-up below applies a new action to every
+// role equally, which would hand it to poc/content/interview_poc too. It's meant for Admin/Super
+// Admin only, so instead of auto-granting it broadly, it's toggled on for Admin once, by hand, in
+// the Team & Roles matrix below.
 const NEW_PERMISSION_ACTIONS = ["expenses.read", "expenses.write", "results.read", "interviews.read"];
 let activePermissions = { ...PERMISSIONS };
 function can(role, action) {
@@ -6108,7 +6112,7 @@ function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
   );
 }
 
-function InterviewsPage() {
+function InterviewsPage({ role }) {
   // Overview is the landing tab — it's also a fix, not just a preference: "A" (the old default)
   // lands on Bucket A / NxtMock, which has no live data wired up at all (see ACADEMY_ROW_BUILDERS),
   // so every fresh visit used to open on an empty table.
@@ -6190,7 +6194,7 @@ function InterviewsPage() {
           <span style={{ fontSize: 11, color: C.muted }}>
             Pulls all Academy interviews from the Interview Coordinator App{lastSyncedAt ? ` · Last synced ${new Date(lastSyncedAt).toLocaleString()}` : ""}
           </span>
-          <Btn variant="secondary" onClick={syncNow} disabled={syncing}>{syncing ? "Syncing…" : "Sync Now"}</Btn>
+          {can(role, "interviews.sync") && <Btn variant="secondary" onClick={syncNow} disabled={syncing}>{syncing ? "Syncing…" : "Sync Now"}</Btn>}
         </div>
       </div>
 
@@ -6586,6 +6590,7 @@ const PERMISSION_ROWS = [
   { group: "Results",    action: "results.read",  label: "View Results tab" },
   { group: "Results",    action: "results.write", label: "Import results / send to interview" },
   { group: "Interviews", action: "interviews.read", label: "View Interviews tab" },
+  { group: "Interviews", action: "interviews.sync", label: "Sync interviews from the Interview Coordinator App" },
   { group: "Drive Expenses", action: "expenses.read",  label: "View drive expenses" },
   { group: "Drive Expenses", action: "expenses.write", label: "Add / edit / delete drive expenses" },
   { group: "Admin",      action: "team",          label: "Manage team & roles", superAdminOnly: true },
@@ -7371,7 +7376,7 @@ export default function App() {
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} />}
           {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} role={role} />}
-          {page === "interviews" && <InterviewsPage />}
+          {page === "interviews" && <InterviewsPage role={role} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
         </div>
