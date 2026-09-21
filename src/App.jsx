@@ -6327,24 +6327,86 @@ function normConfigPairs(data) {
   return [{ assessmentLink: "", configLink: "" }];
 }
 
-const genSlug = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+const AUTOMATION_URL = (import.meta.env.VITE_AUTOMATION_SERVER_URL || "http://localhost:3001").replace(/\/$/, "");
 
-function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAssessment, onUpdateAssessment }) {
+// "9:00 AM" -> "09:00"
+function to24h(t) {
+  const m = String(t || "").trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return "";
+  let h = Number(m[1]) % 12;
+  if (m[3].toUpperCase() === "PM") h += 12;
+  return `${String(h).padStart(2, "0")}:${m[2]}`;
+}
+
+// The invite API wants the published assessment's org_id, which lives in its assessment link.
+function orgIdFromLink(link) {
+  return (String(link || "").match(/org_id=([0-9a-f-]{36})/i) || [])[1] || "";
+}
+
+function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAssessment, onUpdateAssessment, onSaveConfigEntry, onUpdateConfigEntry }) {
   const [selectedExamId, setSelectedExamId] = useState("");
   const [kind, setKind] = useState("Mock");
   const [cloneKey, setCloneKey] = useState("");
   const [cloneStatus, setCloneStatus] = useState("idle"); // idle | cloning | cloned
   const [clonedConfigLink, setClonedConfigLink] = useState("");
-  const [publishStatus, setPublishStatus] = useState("idle"); // idle | publishing | published
+  const [publishStatus, setPublishStatus] = useState("idle"); // idle | published
   const [published, setPublished] = useState(null);
   const [inviteStatus, setInviteStatus] = useState("idle"); // idle | inviting | invited
+  const [inviteError, setInviteError] = useState("");
   const [copiedUrl, setCopiedUrl] = useState(null);
   const [currentAssessmentId, setCurrentAssessmentId] = useState(null);
+  const [manualLink, setManualLink] = useState("");
 
-  const cloneTimer = useRef(null);
-  const publishTimer = useRef(null);
-  const inviteTimer = useRef(null);
-  useEffect(() => () => { clearTimeout(cloneTimer.current); clearTimeout(publishTimer.current); clearTimeout(inviteTimer.current); }, []);
+  // Local automation server (Playwright + saved Topin session) — see /automation-server.
+  const [serverState, setServerState] = useState("checking"); // checking | offline | needs_login | ready
+  const [mobile, setMobile] = useState(() => { try { return localStorage.getItem("topinMobile") || ""; } catch { return ""; } });
+  const [otp, setOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [runLog, setRunLog] = useState([]);
+  const [runError, setRunError] = useState("");
+  const sseRef = useRef(null);
+  useEffect(() => () => sseRef.current?.close(), []);
+
+  const serverFetch = async (path, body) => {
+    const res = await fetch(`${AUTOMATION_URL}${path}`, body === undefined ? {} : {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    return { status: res.status, data: await res.json().catch(() => ({})) };
+  };
+
+  // Ask the server whether it's up and whether a Topin session is on file (validity is only proven at publish time).
+  const checkServer = async () => {
+    setServerState("checking");
+    try {
+      const { data } = await serverFetch("/api/publish/token-status");
+      setServerState(data.hasSession ? "ready" : "needs_login");
+    } catch { setServerState("offline"); }
+  };
+  useEffect(() => { checkServer(); }, []);
+
+  const sendOtp = async () => {
+    setLoginError(""); setLoginBusy(true);
+    try {
+      try { localStorage.setItem("topinMobile", mobile); } catch { /* storage unavailable */ }
+      const { data } = await serverFetch("/api/publish/start", { mobile: mobile.trim() });
+      if (data.status === "already_authenticated") setServerState("ready");
+      else if (data.status === "otp_sent") setOtpSent(true);
+      else setLoginError(data.error || "Could not send OTP");
+    } catch { setLoginError("Automation server is not reachable."); }
+    setLoginBusy(false);
+  };
+
+  const verifyOtp = async () => {
+    setLoginError(""); setLoginBusy(true);
+    try {
+      const { data } = await serverFetch("/api/publish/verify-otp", { otp: otp.trim() });
+      if (data.status === "authenticated") { setServerState("ready"); setOtp(""); setOtpSent(false); }
+      else setLoginError(data.error || "OTP verification failed");
+    } catch { setLoginError("Automation server is not reachable."); }
+    setLoginBusy(false);
+  };
 
   const exam = exams.find(e => e.id === selectedExamId);
   const kindKey = kind === "Mock" ? "mock" : "main";
@@ -6395,55 +6457,127 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
   const pendingInvites = (assessments || []).filter(a => !a.invited && a.id !== currentAssessmentId);
 
   const resetDownstream = () => {
-    clearTimeout(cloneTimer.current); clearTimeout(publishTimer.current); clearTimeout(inviteTimer.current);
+    sseRef.current?.close(); sseRef.current = null;
     setCloneKey(""); setCloneStatus("idle"); setClonedConfigLink("");
-    setPublishStatus("idle"); setPublished(null); setInviteStatus("idle"); setCurrentAssessmentId(null);
+    setPublishStatus("idle"); setPublished(null); setInviteStatus("idle"); setInviteError("");
+    setCurrentAssessmentId(null); setRunLog([]); setRunError(""); setManualLink("");
   };
 
   const onSelectExam = (v) => { setSelectedExamId(v); resetDownstream(); };
   const onSelectKind = (k) => { setKind(k); resetDownstream(); };
-  const changeSource = () => { clearTimeout(cloneTimer.current); setCloneStatus("idle"); setClonedConfigLink(""); setPublishStatus("idle"); setPublished(null); setCurrentAssessmentId(null); setInviteStatus("idle"); };
   const copyUrl = (url) => { if (!url) return; navigator.clipboard?.writeText(url); setCopiedUrl(url); setTimeout(() => setCopiedUrl(null), 1500); };
 
-  const doClone = () => {
-    if (!cloneSource) return;
-    setCloneStatus("cloning");
-    cloneTimer.current = setTimeout(() => {
-      setClonedConfigLink(`https://platform.example.com/config/${genSlug(tag)}-clone`);
-      setCloneStatus("cloned");
-    }, 900);
+  // Everything the automation needs comes from the exam record; report what's missing instead of guessing.
+  const startDate = kind === "Mock" ? exam?.mockStartDate : exam?.mainStartDate;
+  const endDate = (kind === "Mock" ? exam?.mockEndDate : exam?.mainEndDate) || startDate;
+  const [slotStart, slotEnd] = (slot || "").split(" – ").map(to24h);
+  const runTitle = exam ? ((kind === "Mock" ? exam.mockTitle : exam.mainTitle) || exam.type) : "";
+  const missingForRun = [
+    !startDate && "start date",
+    !(slotStart && slotEnd) && "time slot",
+    (!tag || tag === "—") && "exam tag",
+  ].filter(Boolean);
+
+  // Writes the freshly published pair back to the Config Library, replacing the awaiting-publish template when that was the source.
+  const saveToConfigLibrary = async (newConfigLink, assessmentLink) => {
+    const newPair = { configLink: newConfigLink, assessmentLink };
+    const pairs = configEntry ? normConfigPairs(configEntry[kindKey]) : [];
+    let next;
+    if (willReplace) next = pairs.map((p, i) => (i === cloneSource.pairIndex ? newPair : p));
+    else {
+      const emptyIdx = pairs.findIndex(p => !p.configLink && !p.assessmentLink);
+      next = emptyIdx >= 0 ? pairs.map((p, i) => (i === emptyIdx ? newPair : p)) : [...pairs, newPair];
+    }
+    if (configEntry) await onUpdateConfigEntry(configEntry.id, { [kindKey]: next });
+    else await onSaveConfigEntry({ examId: selectedExamId, mock: [{ assessmentLink: "", configLink: "" }], main: [{ assessmentLink: "", configLink: "" }], [kindKey]: next });
   };
 
-  const doPublish = () => {
-    if (cloneStatus !== "cloned") return;
-    setPublishStatus("publishing");
-    publishTimer.current = setTimeout(async () => {
-      const record = {
-        examId: selectedExamId,
-        examType: exam.type,
-        kind,
-        tag,
-        assessmentLink: `https://platform.example.com/asst/${genSlug(tag)}`,
-        configLink: clonedConfigLink,
-        sourceTitle: cloneSource?.title || "",
-        sourceDate: cloneSource?.date || "",
-        replaced: willReplace,
-        invited: false,
-        publishedAt: new Date().toISOString(),
-      };
+  const finishRun = async (done) => {
+    const assessmentLink = done.assessmentLink || "";
+    const record = {
+      examId: selectedExamId,
+      examType: exam.type,
+      kind,
+      tag,
+      assessmentLink,
+      configLink: done.newConfigLink || "",
+      sourceTitle: cloneSource?.title || "",
+      sourceDate: cloneSource?.date || "",
+      replaced: willReplace,
+      invited: false,
+      publishedAt: new Date().toISOString(),
+    };
+    try {
       const id = await onAddAssessment(record);
       setCurrentAssessmentId(id);
-      setPublished({ assessmentLink: record.assessmentLink, configLink: record.configLink, label: tag, replaced: willReplace, sourceTitle: record.sourceTitle, sourceDate: record.sourceDate });
-      setPublishStatus("published");
-    }, 900);
+      await saveToConfigLibrary(record.configLink, assessmentLink);
+    } catch (e) {
+      setRunError(`Published on Topin, but saving to Academy Nexus failed: ${e.message}`);
+    }
+    setClonedConfigLink(record.configLink);
+    setPublished({ assessmentLink, configLink: record.configLink, label: tag, replaced: willReplace, sourceTitle: record.sourceTitle, sourceDate: record.sourceDate });
+    setCloneStatus("cloned");
+    setPublishStatus("published");
   };
 
-  const doInvite = () => {
-    setInviteStatus("inviting");
-    inviteTimer.current = setTimeout(async () => {
-      if (currentAssessmentId) await onUpdateAssessment(currentAssessmentId, { invited: true, invitedAt: new Date().toISOString() });
-      setInviteStatus("invited");
-    }, 900);
+  // Clone the chosen config in Topin, fill title/tag/schedule, publish — one automation run, progress streamed over SSE.
+  const doClonePublish = async () => {
+    if (!cloneSource || missingForRun.length) return;
+    setRunError(""); setRunLog([]); setCloneStatus("cloning");
+
+    sseRef.current?.close();
+    const es = new EventSource(`${AUTOMATION_URL}/api/publish/progress`);
+    sseRef.current = es;
+    es.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.type === "connected") return;
+      if (m.type === "done") { es.close(); finishRun(m); return; }
+      if (m.type === "error") { es.close(); setRunError(m.message); setCloneStatus("idle"); return; }
+      setRunLog(l => [...l, m.message]);
+    };
+
+    try {
+      const { data } = await serverFetch("/api/publish/run", {
+        configUrl: cloneSource.configLink, title: runTitle, uniqueExamId: tag,
+        startDate, startTime: slotStart, endDate, endTime: slotEnd, isMock: kind === "Mock",
+      });
+      if (data.status === "needs_otp") { es.close(); setServerState("needs_login"); setCloneStatus("idle"); setRunError("Topin session expired — log in again below."); }
+      else if (data.status !== "started") { es.close(); setCloneStatus("idle"); setRunError(data.error || "Automation server rejected the request."); }
+    } catch {
+      es.close(); setCloneStatus("idle"); setServerState("offline"); setRunError("Lost connection to the automation server.");
+    }
+  };
+
+  const savePastedLink = async () => {
+    const link = manualLink.trim();
+    if (!orgIdFromLink(link)) { setRunError("That doesn't look like a Topin assessment link (missing org_id)."); return; }
+    setRunError("");
+    try {
+      if (currentAssessmentId) await onUpdateAssessment(currentAssessmentId, { assessmentLink: link });
+      await saveToConfigLibrary(published.configLink, link);
+      setPublished(p => ({ ...p, assessmentLink: link }));
+    } catch (e) { setRunError(`Could not save the link: ${e.message}`); }
+  };
+
+  const doInvite = async () => {
+    const assessmentId = orgIdFromLink(published?.assessmentLink);
+    const candidates = examStudents.map(r => String(r.UID || r.uid || "").trim()).filter(Boolean);
+    if (!assessmentId || !candidates.length) return;
+    setInviteStatus("inviting"); setInviteError("");
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const res = await fetch("/api/invite", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ candidates, assessmentId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (data.failed) setInviteError(`${data.failed} of ${data.total} invites failed: ${(data.errors || []).join("; ")}`);
+      if (data.sent > 0) {
+        if (currentAssessmentId) await onUpdateAssessment(currentAssessmentId, { invited: true, invitedAt: new Date().toISOString(), invitedCount: data.sent });
+        setInviteStatus("invited");
+      } else setInviteStatus("idle");
+    } catch (e) { setInviteError(e.message); setInviteStatus("idle"); }
   };
 
   const resumePending = (a) => {
@@ -6462,7 +6596,7 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     <div>
       <div style={{ marginBottom: 6 }}>
         <h1 style={{ fontSize: 18, fontWeight: 900, color: C.text, margin: 0 }}>Assessment Generation</h1>
-        <p style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Select exam → clone a config → auto-filled details → publish → invite students.</p>
+        <p style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Select exam → pick a config to clone → clone & publish on Topin (title, tag and slot auto-filled) → invite students.</p>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -6522,7 +6656,7 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
             <Card style={{ padding: 10 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
                 <StepBadge n={2} />
-                <span style={{ fontWeight: 800, fontSize: 13 }}>Clone a Config Link</span>
+                <span style={{ fontWeight: 800, fontSize: 13 }}>Clone & Publish on Topin</span>
               </div>
 
               {cloneStatus === "cloned" ? (
@@ -6532,17 +6666,7 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
                       <span style={{ color: C.green, fontWeight: 700 }}>✓ Cloned from </span>
                       <span style={{ fontWeight: 700, color: C.text }}>{clonedFromLabel?.title} — {fmtDate(clonedFromLabel?.date)}</span>
                     </div>
-                    <Btn variant="ghost" size="sm" onClick={changeSource}>Change</Btn>
                   </div>
-                  {publishStatus !== "published" && (
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", background: C.surfaceAlt, borderRadius: 8, padding: "6px 12px", marginBottom: 6 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8 }}>CLONED CONFIG LINK</div>
-                        <div style={{ fontWeight: 700, color: C.text, marginTop: 2, fontSize: 12, wordBreak: "break-all" }}>{clonedConfigLink}</div>
-                      </div>
-                      <LinkChip url={clonedConfigLink} label="Open" />
-                    </div>
-                  )}
                   <Badge color="green">✓ Title, Tag & Time Slot Auto-filled</Badge>
                 </>
               ) : (
@@ -6566,36 +6690,74 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
                       )}
                     </div>
                   )}
+                  {serverState !== "ready" && (
+                    <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 8, background: C.yellowLight, border: "1px solid #e8d888", fontSize: 12, color: C.text }}>
+                      {serverState === "checking" && "Checking the local automation server…"}
+                      {serverState === "offline" && (
+                        <>
+                          <strong>Automation server isn't running.</strong> Start it on this machine (<code>cd automation-server &amp;&amp; npm start</code>), then{" "}
+                          <button onClick={checkServer} style={{ background: "none", border: "none", padding: 0, color: C.blue, cursor: "pointer", fontFamily: "inherit", fontSize: 12, textDecoration: "underline" }}>re-check</button>.
+                        </>
+                      )}
+                      {serverState === "needs_login" && (
+                        <div>
+                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Log in to Topin (one-time — the session is saved on this machine)</div>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                            <input value={mobile} onChange={e => setMobile(e.target.value)} placeholder="Topin mobile number" disabled={otpSent} style={{ ...inputS, width: 190 }} />
+                            {!otpSent
+                              ? <Btn variant="primary" size="sm" onClick={sendOtp} disabled={loginBusy || mobile.trim().length < 10}>{loginBusy ? "Sending…" : "Get OTP"}</Btn>
+                              : <>
+                                  <input value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit OTP" style={{ ...inputS, width: 120 }} />
+                                  <Btn variant="primary" size="sm" onClick={verifyOtp} disabled={loginBusy || otp.length !== 6}>{loginBusy ? "Verifying…" : "Verify"}</Btn>
+                                </>}
+                          </div>
+                          {loginError && <div style={{ color: C.red, marginTop: 4 }}>{loginError}</div>}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {missingForRun.length > 0 && (
+                    <div style={{ marginTop: 6, fontSize: 12, color: C.red }}>Exam is missing: {missingForRun.join(", ")} — fix it in Exam Details first.</div>
+                  )}
                   <div style={{ marginTop: 6 }}>
-                    <Btn variant="primary" onClick={doClone} disabled={!cloneSource || cloneStatus === "cloning"}>
-                      {cloneStatus === "cloning" ? "⏳ Cloning…" : "🧬 Clone Assessment"}
+                    <Btn variant="primary" onClick={doClonePublish} disabled={!cloneSource || cloneStatus === "cloning" || serverState !== "ready" || missingForRun.length > 0}>
+                      {cloneStatus === "cloning" ? "⏳ Cloning & publishing…" : "🧬 Clone & Publish Assessment"}
                     </Btn>
                   </div>
+                  {(cloneStatus === "cloning" || runLog.length > 0) && (
+                    <div style={{ marginTop: 6, maxHeight: 130, overflowY: "auto", background: C.surfaceAlt, borderRadius: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 11, color: C.muted }}>
+                      {runLog.map((l, i) => <div key={i}>{l}</div>)}
+                    </div>
+                  )}
                 </>
               )}
+              {runError && <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 600 }}>{runError}</div>}
             </Card>
           )}
 
-          {/* Publish — a quick action, not a numbered step */}
-          {exam && cloneStatus === "cloned" && (
-            publishStatus !== "published" ? (
-              <div style={{ display: "flex", justifyContent: "center" }}>
-                <Btn variant="green" onClick={doPublish} disabled={publishStatus === "publishing"}>
-                  {publishStatus === "publishing" ? "⏳ Publishing…" : "🚀 Publish Assessment"}
-                </Btn>
+          {/* Published result */}
+          {exam && publishStatus === "published" && published && (
+            <div style={{ background: C.greenLight, border: "1px solid #b8e0cc", borderRadius: 10, padding: 10 }}>
+              <div style={{ marginBottom: 6 }}>
+                <div style={{ fontWeight: 900, fontSize: 13, color: C.green }}>✅ Published!</div>
+                <div style={{ color: C.text, fontWeight: 700, fontSize: 12 }}>{exam?.type} · {kind}</div>
               </div>
-            ) : (
-              <div style={{ background: C.greenLight, border: "1px solid #b8e0cc", borderRadius: 10, padding: 10 }}>
-                <div style={{ marginBottom: 6 }}>
-                  <div style={{ fontWeight: 900, fontSize: 13, color: C.green }}>✅ Published!</div>
-                  <div style={{ color: C.text, fontWeight: 700, fontSize: 12 }}>{exam?.type} · {kind}</div>
-                </div>
-                <div style={{ background: C.surface, borderRadius: 8, padding: "0 12px" }}>
-                  <LinkRow label="Assessment Link" url={published.assessmentLink} copiedUrl={copiedUrl} onCopy={copyUrl} />
-                  <LinkRow label="Config Link" url={published.configLink} isLast copiedUrl={copiedUrl} onCopy={copyUrl} />
-                </div>
+              <div style={{ background: C.surface, borderRadius: 8, padding: "0 12px" }}>
+                {published.assessmentLink
+                  ? <LinkRow label="Assessment Link" url={published.assessmentLink} copiedUrl={copiedUrl} onCopy={copyUrl} />
+                  : (
+                    <div style={{ padding: "8px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                      <div style={{ color: C.red, fontWeight: 600, marginBottom: 4 }}>Topin published it, but the assessment link couldn't be read automatically. Copy it from Topin and paste it here:</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input value={manualLink} onChange={e => setManualLink(e.target.value)} placeholder="https://assessment.topin.tech/?org_id=…" style={inputS} />
+                        <Btn variant="primary" size="sm" onClick={savePastedLink} disabled={!manualLink.trim()}>Save</Btn>
+                      </div>
+                    </div>
+                  )}
+                <LinkRow label="Config Link" url={published.configLink} isLast copiedUrl={copiedUrl} onCopy={copyUrl} />
               </div>
-            )
+              {runError && <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 600 }}>{runError}</div>}
+            </div>
           )}
 
           {/* Step 3: Invite Students */}
@@ -6610,13 +6772,14 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
                   <div style={{ fontSize: 12, color: C.muted }}>
                     {examStudents.length > 0 ? `${examStudents.length} student${examStudents.length === 1 ? "" : "s"} matched for this exam.` : "No student data uploaded for this exam yet."}
                   </div>
-                  <Btn variant="blue" onClick={doInvite} disabled={inviteStatus === "inviting" || examStudents.length === 0}>
+                  <Btn variant="blue" onClick={doInvite} disabled={inviteStatus === "inviting" || examStudents.length === 0 || !orgIdFromLink(published?.assessmentLink)}>
                     {inviteStatus === "inviting" ? "⏳ Inviting…" : "📨 Invite Students"}
                   </Btn>
                 </div>
               ) : (
                 <div style={{ fontWeight: 800, color: C.green, fontSize: 13 }}>✅ Invited — {examStudents.length} students</div>
               )}
+              {inviteError && <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 600 }}>{inviteError}</div>}
             </Card>
           )}
       </div>
@@ -7432,7 +7595,7 @@ export default function App() {
         <div style={{ padding: "32px 32px" }}>
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
-          {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} />}
+          {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
           {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} role={role} />}
           {page === "interviews" && <InterviewsPage role={role} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
