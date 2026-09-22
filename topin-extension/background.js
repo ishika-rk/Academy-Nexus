@@ -23,7 +23,9 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg?.type === "CLONE") {
-    chrome.tabs.create({ url: msg.payload.sampleConfigLink }, (tab) => {
+    // Background so Clone doesn't yank the person off the Academy Nexus page — they can
+    // still watch it via "Open tab" any time.
+    chrome.tabs.create({ url: msg.payload.sampleConfigLink, active: false }, (tab) => {
       jobPayloads[tab.id] = { mode: "clone", payload: msg.payload };
       pending[tab.id] = { sendResponse, kind: "clone" };
     });
@@ -46,7 +48,7 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
         return;
       }
       if (!fallbackUrl) { sendResponse({ ok: false, error: "That review tab was closed, and there's no link to reopen it from — clone again." }); return; }
-      chrome.tabs.create({ url: fallbackUrl }, (tab) => {
+      chrome.tabs.create({ url: fallbackUrl, active: false }, (tab) => {
         jobPayloads[tab.id] = { mode: "publish" };
         pending[tab.id] = { sendResponse, kind: "publish" };
       });
