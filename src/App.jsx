@@ -6327,7 +6327,9 @@ function normConfigPairs(data) {
   return [{ assessmentLink: "", configLink: "" }];
 }
 
-const AUTOMATION_URL = (import.meta.env.VITE_AUTOMATION_SERVER_URL || "http://localhost:3001").replace(/\/$/, "");
+// Chrome/Edge extension ID is pinned via the "key" in topin-extension/manifest.json, so it's
+// the same for everyone who loads that folder — see topin-extension/README.md for install steps.
+const EXTENSION_ID = import.meta.env.VITE_TOPIN_EXTENSION_ID || "fiaepjjahhmphdlmkganmmamnookjkge";
 
 // "9:00 AM" -> "09:00"
 function to24h(t) {
@@ -6343,70 +6345,48 @@ function orgIdFromLink(link) {
   return (String(link || "").match(/org_id=([0-9a-f-]{36})/i) || [])[1] || "";
 }
 
+// Clone's source needs the sample's *view* link, not its edit link.
+function toViewLink(url) {
+  return String(url || "").replace("/edit-assessment/", "/view-assessment/");
+}
+
+function sendToExtension(type, payload) {
+  return new Promise((resolve, reject) => {
+    if (!window.chrome?.runtime?.sendMessage) { reject(new Error("not_supported")); return; }
+    try {
+      window.chrome.runtime.sendMessage(EXTENSION_ID, { type, payload }, (response) => {
+        if (window.chrome.runtime.lastError) { reject(new Error(window.chrome.runtime.lastError.message || "extension_unreachable")); return; }
+        resolve(response);
+      });
+    } catch (e) { reject(e); }
+  });
+}
+
 function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAssessment, onUpdateAssessment, onSaveConfigEntry, onUpdateConfigEntry }) {
   const [selectedExamId, setSelectedExamId] = useState("");
   const [kind, setKind] = useState("Mock");
   const [cloneKey, setCloneKey] = useState("");
   const [cloneStatus, setCloneStatus] = useState("idle"); // idle | cloning | cloned
-  const [clonedConfigLink, setClonedConfigLink] = useState("");
-  const [publishStatus, setPublishStatus] = useState("idle"); // idle | published
+  const [reviewLink, setReviewLink] = useState("");
+  const [reviewTabId, setReviewTabId] = useState(null);
+  const [publishStatus, setPublishStatus] = useState("idle"); // idle | publishing | published
   const [published, setPublished] = useState(null);
   const [inviteStatus, setInviteStatus] = useState("idle"); // idle | inviting | invited
   const [inviteError, setInviteError] = useState("");
   const [copiedUrl, setCopiedUrl] = useState(null);
   const [currentAssessmentId, setCurrentAssessmentId] = useState(null);
   const [manualLink, setManualLink] = useState("");
-
-  // Local automation server (Playwright + saved Topin session) — see /automation-server.
-  const [serverState, setServerState] = useState("checking"); // checking | offline | needs_login | ready
-  const [mobile, setMobile] = useState(() => { try { return localStorage.getItem("topinMobile") || ""; } catch { return ""; } });
-  const [otp, setOtp] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
-  const [loginBusy, setLoginBusy] = useState(false);
-  const [loginError, setLoginError] = useState("");
-  const [runLog, setRunLog] = useState([]);
   const [runError, setRunError] = useState("");
-  const sseRef = useRef(null);
-  useEffect(() => () => sseRef.current?.close(), []);
 
-  const serverFetch = async (path, body) => {
-    const res = await fetch(`${AUTOMATION_URL}${path}`, body === undefined ? {} : {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    return { status: res.status, data: await res.json().catch(() => ({})) };
+  // Topin automation extension — see /topin-extension. Runs in the person's own browser
+  // under their own Topin login; nothing to install on a server or keep running.
+  const [extState, setExtState] = useState("checking"); // checking | not_installed | ready
+  const checkExtension = async () => {
+    setExtState("checking");
+    try { await sendToExtension("PING"); setExtState("ready"); }
+    catch { setExtState("not_installed"); }
   };
-
-  // Ask the server whether it's up and whether a Topin session is on file (validity is only proven at publish time).
-  const checkServer = async () => {
-    setServerState("checking");
-    try {
-      const { data } = await serverFetch("/api/publish/token-status");
-      setServerState(data.hasSession ? "ready" : "needs_login");
-    } catch { setServerState("offline"); }
-  };
-  useEffect(() => { checkServer(); }, []);
-
-  const sendOtp = async () => {
-    setLoginError(""); setLoginBusy(true);
-    try {
-      try { localStorage.setItem("topinMobile", mobile); } catch { /* storage unavailable */ }
-      const { data } = await serverFetch("/api/publish/start", { mobile: mobile.trim() });
-      if (data.status === "already_authenticated") setServerState("ready");
-      else if (data.status === "otp_sent") setOtpSent(true);
-      else setLoginError(data.error || "Could not send OTP");
-    } catch { setLoginError("Automation server is not reachable."); }
-    setLoginBusy(false);
-  };
-
-  const verifyOtp = async () => {
-    setLoginError(""); setLoginBusy(true);
-    try {
-      const { data } = await serverFetch("/api/publish/verify-otp", { otp: otp.trim() });
-      if (data.status === "authenticated") { setServerState("ready"); setOtp(""); setOtpSent(false); }
-      else setLoginError(data.error || "OTP verification failed");
-    } catch { setLoginError("Automation server is not reachable."); }
-    setLoginBusy(false);
-  };
+  useEffect(() => { checkExtension(); }, []);
 
   const exam = exams.find(e => e.id === selectedExamId);
   const kindKey = kind === "Mock" ? "mock" : "main";
@@ -6457,10 +6437,9 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
   const pendingInvites = (assessments || []).filter(a => !a.invited && a.id !== currentAssessmentId);
 
   const resetDownstream = () => {
-    sseRef.current?.close(); sseRef.current = null;
-    setCloneKey(""); setCloneStatus("idle"); setClonedConfigLink("");
+    setCloneKey(""); setCloneStatus("idle"); setReviewLink(""); setReviewTabId(null);
     setPublishStatus("idle"); setPublished(null); setInviteStatus("idle"); setInviteError("");
-    setCurrentAssessmentId(null); setRunLog([]); setRunError(""); setManualLink("");
+    setCurrentAssessmentId(null); setRunError(""); setManualLink("");
   };
 
   const onSelectExam = (v) => { setSelectedExamId(v); resetDownstream(); };
@@ -6478,6 +6457,31 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     (!tag || tag === "—") && "exam tag",
   ].filter(Boolean);
 
+  // Step 2: clone the chosen config, fill in title/tag/schedule, save it in Topin — nothing published
+  // yet, nothing written to Academy Nexus yet. Leaves a tab open on the saved, reviewable config.
+  const doClone = async () => {
+    if (!cloneSource || missingForRun.length || extState !== "ready") return;
+    setRunError(""); setCloneStatus("cloning");
+    try {
+      const res = await sendToExtension("CLONE", {
+        sampleConfigLink: toViewLink(cloneSource.configLink),
+        title: runTitle, tag, startDate, startTime: slotStart, endDate, endTime: slotEnd,
+      });
+      if (!res?.ok) throw new Error(res?.error || "The extension could not clone this config.");
+      setReviewLink(res.editLink);
+      setReviewTabId(res.tabId);
+      setCloneStatus("cloned");
+    } catch (e) {
+      setCloneStatus("idle");
+      setRunError(e.message === "not_supported" || e.message === "extension_unreachable"
+        ? "Lost contact with the Topin automation extension — is it still installed and enabled?"
+        : e.message);
+      checkExtension();
+    }
+  };
+
+  const openReviewTab = () => { if (reviewTabId != null) sendToExtension("FOCUS_TAB", { tabId: reviewTabId }).catch(() => {}); };
+
   // Writes the freshly published pair back to the Config Library, replacing the awaiting-publish template when that was the source.
   const saveToConfigLibrary = async (newConfigLink, assessmentLink) => {
     const newPair = { configLink: newConfigLink, assessmentLink };
@@ -6492,15 +6496,14 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     else await onSaveConfigEntry({ examId: selectedExamId, mock: [{ assessmentLink: "", configLink: "" }], main: [{ assessmentLink: "", configLink: "" }], [kindKey]: next });
   };
 
-  const finishRun = async (done) => {
-    const assessmentLink = done.assessmentLink || "";
+  const recordPublished = async (assessmentLink) => {
     const record = {
       examId: selectedExamId,
       examType: exam.type,
       kind,
       tag,
       assessmentLink,
-      configLink: done.newConfigLink || "",
+      configLink: reviewLink,
       sourceTitle: cloneSource?.title || "",
       sourceDate: cloneSource?.date || "",
       replaced: willReplace,
@@ -6514,37 +6517,22 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     } catch (e) {
       setRunError(`Published on Topin, but saving to Academy Nexus failed: ${e.message}`);
     }
-    setClonedConfigLink(record.configLink);
     setPublished({ assessmentLink, configLink: record.configLink, label: tag, replaced: willReplace, sourceTitle: record.sourceTitle, sourceDate: record.sourceDate });
-    setCloneStatus("cloned");
-    setPublishStatus("published");
   };
 
-  // Clone the chosen config in Topin, fill title/tag/schedule, publish — one automation run, progress streamed over SSE.
-  const doClonePublish = async () => {
-    if (!cloneSource || missingForRun.length) return;
-    setRunError(""); setRunLog([]); setCloneStatus("cloning");
-
-    sseRef.current?.close();
-    const es = new EventSource(`${AUTOMATION_URL}/api/publish/progress`);
-    sseRef.current = es;
-    es.onmessage = (ev) => {
-      let m; try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.type === "connected") return;
-      if (m.type === "done") { es.close(); finishRun(m); return; }
-      if (m.type === "error") { es.close(); setRunError(m.message); setCloneStatus("idle"); return; }
-      setRunLog(l => [...l, m.message]);
-    };
-
+  // Step 2b: publish the config reviewed in Step 2 — only fires on this explicit click, from the
+  // same tab that was left open for review.
+  const doPublish = async () => {
+    if (cloneStatus !== "cloned" || reviewTabId == null) return;
+    setRunError(""); setPublishStatus("publishing");
     try {
-      const { data } = await serverFetch("/api/publish/run", {
-        configUrl: cloneSource.configLink, title: runTitle, uniqueExamId: tag,
-        startDate, startTime: slotStart, endDate, endTime: slotEnd, isMock: kind === "Mock",
-      });
-      if (data.status === "needs_otp") { es.close(); setServerState("needs_login"); setCloneStatus("idle"); setRunError("Topin session expired — log in again below."); }
-      else if (data.status !== "started") { es.close(); setCloneStatus("idle"); setRunError(data.error || "Automation server rejected the request."); }
-    } catch {
-      es.close(); setCloneStatus("idle"); setServerState("offline"); setRunError("Lost connection to the automation server.");
+      const res = await sendToExtension("PUBLISH", { tabId: reviewTabId });
+      if (!res?.ok) throw new Error(res?.error || "The extension could not publish this assessment.");
+      await recordPublished(res.assessmentLink || "");
+      setPublishStatus("published");
+    } catch (e) {
+      setPublishStatus("idle");
+      setRunError(e.message);
     }
   };
 
@@ -6585,7 +6573,6 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     setSelectedExamId(a.examId);
     setKind(a.kind);
     setCloneStatus("cloned");
-    setClonedConfigLink(a.configLink);
     setPublishStatus("published");
     setPublished({ assessmentLink: a.assessmentLink, configLink: a.configLink, label: a.tag, replaced: a.replaced, sourceTitle: a.sourceTitle, sourceDate: a.sourceDate });
     setCurrentAssessmentId(a.id);
@@ -6596,7 +6583,7 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     <div>
       <div style={{ marginBottom: 6 }}>
         <h1 style={{ fontSize: 18, fontWeight: 900, color: C.text, margin: 0 }}>Assessment Generation</h1>
-        <p style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Select exam → pick a config to clone → clone & publish on Topin (title, tag and slot auto-filled) → invite students.</p>
+        <p style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Select exam → clone a config on Topin (title, tag & slot auto-filled, saved for review) → review & publish → invite students.</p>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -6651,12 +6638,12 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
             )}
           </Card>
 
-          {/* Step 2: Clone a Config Link (clone + auto-fill combined) */}
+          {/* Step 2: Clone on Topin */}
           {exam && (
             <Card style={{ padding: 10 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
                 <StepBadge n={2} />
-                <span style={{ fontWeight: 800, fontSize: 13 }}>Clone & Publish on Topin</span>
+                <span style={{ fontWeight: 800, fontSize: 13 }}>Clone on Topin</span>
               </div>
 
               {cloneStatus === "cloned" ? (
@@ -6667,7 +6654,17 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
                       <span style={{ fontWeight: 700, color: C.text }}>{clonedFromLabel?.title} — {fmtDate(clonedFromLabel?.date)}</span>
                     </div>
                   </div>
-                  <Badge color="green">✓ Title, Tag & Time Slot Auto-filled</Badge>
+                  <Badge color="green">✓ Title, Tag & Time Slot filled and saved</Badge>
+                  {publishStatus !== "published" && reviewLink && (
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", background: C.surfaceAlt, borderRadius: 8, padding: "6px 12px", marginTop: 6 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: 0.8 }}>REVIEW BEFORE PUBLISHING</div>
+                        <div style={{ fontWeight: 700, color: C.text, marginTop: 2, fontSize: 12, wordBreak: "break-all" }}>{reviewLink}</div>
+                        <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>This is your own Topin login's copy — open it, check it, edit anything before publishing. Use "Open tab" below, not a pasted copy of this link — a freshly opened copy lands one step further in, on Publish & Invite, instead of this review page.</div>
+                      </div>
+                      <Btn variant="ghost" size="sm" onClick={openReviewTab}>Open tab</Btn>
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
@@ -6690,29 +6687,14 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
                       )}
                     </div>
                   )}
-                  {serverState !== "ready" && (
+                  {extState !== "ready" && (
                     <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 8, background: C.yellowLight, border: "1px solid #e8d888", fontSize: 12, color: C.text }}>
-                      {serverState === "checking" && "Checking the local automation server…"}
-                      {serverState === "offline" && (
+                      {extState === "checking" && "Checking for the Topin automation extension…"}
+                      {extState === "not_installed" && (
                         <>
-                          <strong>Automation server isn't running.</strong> Start it on this machine (<code>cd automation-server &amp;&amp; npm start</code>), then{" "}
-                          <button onClick={checkServer} style={{ background: "none", border: "none", padding: 0, color: C.blue, cursor: "pointer", fontFamily: "inherit", fontSize: 12, textDecoration: "underline" }}>re-check</button>.
+                          <strong>Topin automation extension not found.</strong> Install it once from <code>/topin-extension</code> in the repo (see its README), then{" "}
+                          <button onClick={checkExtension} style={{ background: "none", border: "none", padding: 0, color: C.blue, cursor: "pointer", fontFamily: "inherit", fontSize: 12, textDecoration: "underline" }}>re-check</button>.
                         </>
-                      )}
-                      {serverState === "needs_login" && (
-                        <div>
-                          <div style={{ fontWeight: 700, marginBottom: 6 }}>Log in to Topin (one-time — the session is saved on this machine)</div>
-                          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                            <input value={mobile} onChange={e => setMobile(e.target.value)} placeholder="Topin mobile number" disabled={otpSent} style={{ ...inputS, width: 190 }} />
-                            {!otpSent
-                              ? <Btn variant="primary" size="sm" onClick={sendOtp} disabled={loginBusy || mobile.trim().length < 10}>{loginBusy ? "Sending…" : "Get OTP"}</Btn>
-                              : <>
-                                  <input value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit OTP" style={{ ...inputS, width: 120 }} />
-                                  <Btn variant="primary" size="sm" onClick={verifyOtp} disabled={loginBusy || otp.length !== 6}>{loginBusy ? "Verifying…" : "Verify"}</Btn>
-                                </>}
-                          </div>
-                          {loginError && <div style={{ color: C.red, marginTop: 4 }}>{loginError}</div>}
-                        </div>
                       )}
                     </div>
                   )}
@@ -6720,44 +6702,47 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
                     <div style={{ marginTop: 6, fontSize: 12, color: C.red }}>Exam is missing: {missingForRun.join(", ")} — fix it in Exam Details first.</div>
                   )}
                   <div style={{ marginTop: 6 }}>
-                    <Btn variant="primary" onClick={doClonePublish} disabled={!cloneSource || cloneStatus === "cloning" || serverState !== "ready" || missingForRun.length > 0}>
-                      {cloneStatus === "cloning" ? "⏳ Cloning & publishing…" : "🧬 Clone & Publish Assessment"}
+                    <Btn variant="primary" onClick={doClone} disabled={!cloneSource || cloneStatus === "cloning" || extState !== "ready" || missingForRun.length > 0}>
+                      {cloneStatus === "cloning" ? "⏳ Cloning…" : "🧬 Clone Assessment"}
                     </Btn>
                   </div>
-                  {(cloneStatus === "cloning" || runLog.length > 0) && (
-                    <div style={{ marginTop: 6, maxHeight: 130, overflowY: "auto", background: C.surfaceAlt, borderRadius: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 11, color: C.muted }}>
-                      {runLog.map((l, i) => <div key={i}>{l}</div>)}
-                    </div>
-                  )}
                 </>
               )}
               {runError && <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 600 }}>{runError}</div>}
             </Card>
           )}
 
-          {/* Published result */}
-          {exam && publishStatus === "published" && published && (
-            <div style={{ background: C.greenLight, border: "1px solid #b8e0cc", borderRadius: 10, padding: 10 }}>
-              <div style={{ marginBottom: 6 }}>
-                <div style={{ fontWeight: 900, fontSize: 13, color: C.green }}>✅ Published!</div>
-                <div style={{ color: C.text, fontWeight: 700, fontSize: 12 }}>{exam?.type} · {kind}</div>
+          {/* Publish — a quick action, not a numbered step */}
+          {exam && cloneStatus === "cloned" && (
+            publishStatus !== "published" ? (
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                <Btn variant="green" onClick={doPublish} disabled={publishStatus === "publishing"}>
+                  {publishStatus === "publishing" ? "⏳ Publishing…" : "🚀 Publish Assessment"}
+                </Btn>
               </div>
-              <div style={{ background: C.surface, borderRadius: 8, padding: "0 12px" }}>
-                {published.assessmentLink
-                  ? <LinkRow label="Assessment Link" url={published.assessmentLink} copiedUrl={copiedUrl} onCopy={copyUrl} />
-                  : (
-                    <div style={{ padding: "8px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
-                      <div style={{ color: C.red, fontWeight: 600, marginBottom: 4 }}>Topin published it, but the assessment link couldn't be read automatically. Copy it from Topin and paste it here:</div>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <input value={manualLink} onChange={e => setManualLink(e.target.value)} placeholder="https://assessment.topin.tech/?org_id=…" style={inputS} />
-                        <Btn variant="primary" size="sm" onClick={savePastedLink} disabled={!manualLink.trim()}>Save</Btn>
+            ) : (
+              <div style={{ background: C.greenLight, border: "1px solid #b8e0cc", borderRadius: 10, padding: 10 }}>
+                <div style={{ marginBottom: 6 }}>
+                  <div style={{ fontWeight: 900, fontSize: 13, color: C.green }}>✅ Published!</div>
+                  <div style={{ color: C.text, fontWeight: 700, fontSize: 12 }}>{exam?.type} · {kind}</div>
+                </div>
+                <div style={{ background: C.surface, borderRadius: 8, padding: "0 12px" }}>
+                  {published.assessmentLink
+                    ? <LinkRow label="Assessment Link" url={published.assessmentLink} copiedUrl={copiedUrl} onCopy={copyUrl} />
+                    : (
+                      <div style={{ padding: "8px 0", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
+                        <div style={{ color: C.red, fontWeight: 600, marginBottom: 4 }}>Topin published it, but the assessment link couldn't be read automatically. Copy it from Topin and paste it here:</div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <input value={manualLink} onChange={e => setManualLink(e.target.value)} placeholder="https://assessment.topin.tech/?org_id=…" style={inputS} />
+                          <Btn variant="primary" size="sm" onClick={savePastedLink} disabled={!manualLink.trim()}>Save</Btn>
+                        </div>
                       </div>
-                    </div>
-                  )}
-                <LinkRow label="Config Link" url={published.configLink} isLast copiedUrl={copiedUrl} onCopy={copyUrl} />
+                    )}
+                  <LinkRow label="Config Link" url={published.configLink} isLast copiedUrl={copiedUrl} onCopy={copyUrl} />
+                </div>
+                {runError && <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 600 }}>{runError}</div>}
               </div>
-              {runError && <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 600 }}>{runError}</div>}
-            </div>
+            )
           )}
 
           {/* Step 3: Invite Students */}

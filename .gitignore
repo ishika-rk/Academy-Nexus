@@ -35,6 +35,3 @@ dist-ssr
 
 .vercel
 .env*
-
-# Topin login session saved by the local automation server
-automation-server/topin-session.json

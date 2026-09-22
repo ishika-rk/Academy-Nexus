@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Academy Nexus – Topin Automation",
+  "version": "1.0.0",
+  "description": "Clones and publishes Topin assessment configs from the Academy Nexus Assessment Generation page. Only talks to config.topin.tech and the Academy Nexus app.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxM7QyHQ7tHpMPNgM86oSek6iKt/Ow3wwiQSmDe28gA9mEyPQB4Oed+HbYMU27mX5+bsee4eNKbVP+8RSiJWYTZk62Y8eVMik3edBFfz1LO+aFKA0xExCrrk5TcgGjw+FmQ61FcTByiL4vr17aGZSvyOZzSu1TPXmTsJhtPpJfnF6sHlESTKFZ0e61sB5bACzXhQTKOcIKxzFbtEVR+9Rgh86fYW5lpifGswtGfMs+R9DDMhMFHgOFWa8xSnSOih+cOXMAkkQkOabNmtHOlrR+MyAsb66CYsirqtkgGn/VAtx6Ym4/bdRucXD38eGJFcJE97OAzQxhjCFk/UKGLfC3QIDAQAB",
+  "permissions": ["tabs", "clipboardRead"],
+  "host_permissions": ["https://config.topin.tech/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://config.topin.tech/*"],
+      "js": ["content-topin.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://academy-nexus-gray.vercel.app/*",
+      "http://localhost:5173/*",
+      "http://localhost:5174/*"
+    ]
+  }
+}
