@@ -6480,7 +6480,16 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     }
   };
 
-  const openReviewTab = () => { if (reviewTabId != null) sendToExtension("FOCUS_TAB", { tabId: reviewTabId }).catch(() => {}); };
+  // Falls back to reopening reviewLink fresh if the tab we left open for review was closed —
+  // the data's already saved in Topin, so that still works, it just lands on "Publish & Invite"
+  // instead of "Final Review" (Topin's own behavior for a freshly opened, already-saved config).
+  const openReviewTab = async () => {
+    try {
+      const res = await sendToExtension("FOCUS_TAB", { tabId: reviewTabId, fallbackUrl: reviewLink });
+      if (res?.ok) { if (res.tabId != null) setReviewTabId(res.tabId); }
+      else setRunError(res?.error || "Could not open the review tab.");
+    } catch { setRunError("Lost contact with the Topin automation extension."); }
+  };
 
   // Writes the freshly published pair back to the Config Library, replacing the awaiting-publish template when that was the source.
   const saveToConfigLibrary = async (newConfigLink, assessmentLink) => {
@@ -6520,14 +6529,15 @@ function AssessmentGenPage({ exams, configEntries, uploads, assessments, onAddAs
     setPublished({ assessmentLink, configLink: record.configLink, label: tag, replaced: willReplace, sourceTitle: record.sourceTitle, sourceDate: record.sourceDate });
   };
 
-  // Step 2b: publish the config reviewed in Step 2 — only fires on this explicit click, from the
-  // same tab that was left open for review.
+  // Step 2b: publish the config reviewed in Step 2. Prefers the same tab left open for
+  // review; if that was closed, the extension reopens the saved link fresh instead.
   const doPublish = async () => {
-    if (cloneStatus !== "cloned" || reviewTabId == null) return;
+    if (cloneStatus !== "cloned") return;
     setRunError(""); setPublishStatus("publishing");
     try {
-      const res = await sendToExtension("PUBLISH", { tabId: reviewTabId });
+      const res = await sendToExtension("PUBLISH", { tabId: reviewTabId, fallbackUrl: reviewLink });
       if (!res?.ok) throw new Error(res?.error || "The extension could not publish this assessment.");
+      if (res.tabId != null) setReviewTabId(res.tabId);
       await recordPublished(res.assessmentLink || "");
       setPublishStatus("published");
     } catch (e) {

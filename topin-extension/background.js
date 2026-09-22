@@ -4,8 +4,16 @@
 
 // tabId -> { sendResponse, kind: "clone" | "publish" }
 const pending = {};
-// tabId -> the clone payload, kept until the content script signals it's ready to receive it
+// tabId -> { mode: "clone", payload } | { mode: "publish" } — kept until the content script
+// signals it's ready to receive its instruction
 const jobPayloads = {};
+
+function tabExists(tabId) {
+  return new Promise((resolve) => {
+    if (tabId == null) { resolve(false); return; }
+    chrome.tabs.get(tabId, (tab) => resolve(!chrome.runtime.lastError && !!tab));
+  });
+}
 
 // ── From the Academy Nexus page ────────────────────────────────
 chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
@@ -16,28 +24,48 @@ chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
 
   if (msg?.type === "CLONE") {
     chrome.tabs.create({ url: msg.payload.sampleConfigLink }, (tab) => {
-      jobPayloads[tab.id] = msg.payload;
+      jobPayloads[tab.id] = { mode: "clone", payload: msg.payload };
       pending[tab.id] = { sendResponse, kind: "clone" };
     });
     return true; // async response
   }
 
+  // Both PUBLISH and FOCUS_TAB target a previously-opened review tab by id. That tab may
+  // have been closed since — in which case fall back to reopening the same saved config
+  // link fresh (the data was already persisted at clone time, so this still works) instead
+  // of failing silently.
   if (msg?.type === "PUBLISH") {
-    const tabId = msg.payload?.tabId;
-    if (!tabId) { sendResponse({ ok: false, error: "No tab to publish from — clone first." }); return false; }
-    pending[tabId] = { sendResponse, kind: "publish" };
-    chrome.tabs.sendMessage(tabId, { type: "RUN_PUBLISH" }).catch((e) => {
-      delete pending[tabId];
-      sendResponse({ ok: false, error: `Could not reach the review tab: ${e.message}` });
-    });
+    (async () => {
+      const { tabId, fallbackUrl } = msg.payload || {};
+      if (tabId != null && (await tabExists(tabId))) {
+        pending[tabId] = { sendResponse, kind: "publish" };
+        chrome.tabs.sendMessage(tabId, { type: "RUN_PUBLISH" }).catch((e) => {
+          delete pending[tabId];
+          sendResponse({ ok: false, error: `Could not reach the review tab: ${e.message}` });
+        });
+        return;
+      }
+      if (!fallbackUrl) { sendResponse({ ok: false, error: "That review tab was closed, and there's no link to reopen it from — clone again." }); return; }
+      chrome.tabs.create({ url: fallbackUrl }, (tab) => {
+        jobPayloads[tab.id] = { mode: "publish" };
+        pending[tab.id] = { sendResponse, kind: "publish" };
+      });
+    })();
     return true;
   }
 
   if (msg?.type === "FOCUS_TAB") {
-    const tabId = msg.payload?.tabId;
-    if (tabId) chrome.tabs.update(tabId, { active: true }).catch(() => {});
-    sendResponse({ ok: true });
-    return false;
+    (async () => {
+      const { tabId, fallbackUrl } = msg.payload || {};
+      if (tabId != null && (await tabExists(tabId))) {
+        await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+        sendResponse({ ok: true, tabId });
+        return;
+      }
+      if (!fallbackUrl) { sendResponse({ ok: false, error: "That review tab was closed, and there's no link to reopen it from — clone again." }); return; }
+      chrome.tabs.create({ url: fallbackUrl }, (tab) => sendResponse({ ok: true, tabId: tab.id, reopened: true }));
+    })();
+    return true;
   }
 
   return false;
@@ -49,8 +77,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!tabId) return false;
 
   if (msg?.type === "CS_READY") {
-    const payload = jobPayloads[tabId];
-    if (payload) chrome.tabs.sendMessage(tabId, { type: "RUN_CLONE", payload }).catch(() => {});
+    const job = jobPayloads[tabId];
+    if (job?.mode === "clone") chrome.tabs.sendMessage(tabId, { type: "RUN_CLONE", payload: job.payload }).catch(() => {});
+    else if (job?.mode === "publish") chrome.tabs.sendMessage(tabId, { type: "RUN_PUBLISH" }).catch(() => {});
     sendResponse({});
     return false;
   }
