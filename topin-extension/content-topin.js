@@ -130,6 +130,11 @@ async function setDateTimeField(testId, targetDate) {
   const items = Array.from(picker.querySelectorAll(".react-datepicker__time-list-item"));
   const idx = items.findIndex((it) => normalizeSpaces(it.textContent) === timeText);
   if (idx === -1 || !list) throw new Error(`Time option "${timeText}" not found in the picker`);
+  // Topin disables past times for a same-day date and silently ignores clicks on them —
+  // catch that up front instead of a confusing "field shows the wrong thing" error later.
+  if (items[idx].className.includes("disabled")) {
+    throw new Error(`${normalizeSpaces(input.getAttribute("aria-label") || testId)} of ${timeText} on ${normalizeSpaces(picker.querySelector(".react-datepicker__current-month")?.textContent)} ${normalized.getDate()} has already passed — Topin won't accept a start/end time in the past. Check the exam's date in Exam Details.`);
+  }
   list.scrollTop = items[idx].offsetTop;
   await sleep(150);
   clickEl(items[idx]);
