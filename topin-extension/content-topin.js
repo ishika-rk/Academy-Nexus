@@ -196,12 +196,13 @@ async function runPublish() {
   clickEl(publishBtn);
   await sleep(800);
 
-  const accessChoice = await waitFor(
-    () => Array.from(document.querySelectorAll("div")).find((d) => /^(private|public)\b/i.test(normalizeSpaces(d.textContent))),
-    { timeout: 15000, desc: "Private/Public access choice" }
-  );
-  clickEl(accessChoice);
-
+  // The confirmation dialog's Access Type radios (Public/Private) come pre-selected — Private
+  // by default, matching how these assessments are actually used — so there's nothing to pick
+  // here. (An earlier attempt tried to find-and-click one by matching its heading text, but
+  // Topin's markup runs the heading and its description together as one text blob, which broke
+  // that match — confirmed against the real dialog 2026-09-23. Leaving the default alone avoids
+  // that fragile match entirely; it only becomes wrong if a sample config is meant to publish
+  // Public, which isn't how these have been used so far.)
   const agreeBtn = await waitForButtonByText(/yes,?\s*i agree/i, { timeout: 15000 });
   clickEl(agreeBtn);
 
