@@ -5062,6 +5062,17 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
   const stickyStyle = (colIndex, bg) => colIndex < freezeCount ? {
     position: "sticky",
     left: colIndex * INTERVIEW_COL_WIDTH,
+    // table-layout:fixed normally gets a frozen header cell's width from the <colgroup>, but that
+    // sizing isn't reliable once position:sticky is also on the cell — a sticky header cell can
+    // render narrower than its <col>, leaving a real blank void (not just a missing border line)
+    // between it and the next sticky cell. Forcing the width explicitly here, same as tdBase does
+    // for body cells, removes the ambiguity. This is what was actually causing the visible gap
+    // between Candidate ID and Candidate Name on IRP L1 — other buckets have a Candidate Resume
+    // column sandwiched between them, so the same gap fell on an already-blank cell and went
+    // unnoticed there.
+    width: INTERVIEW_COL_WIDTH,
+    minWidth: INTERVIEW_COL_WIDTH,
+    maxWidth: INTERVIEW_COL_WIDTH,
     zIndex: colIndex === freezeCount - 1 ? 3 : 2,
     background: bg,
     // A real border-right disappears while scrolling: the table uses border-collapse, which
@@ -5070,11 +5081,8 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
     // own box instead of participating in that border-collapse resolution, so it stays put and
     // stays on top (it's not a real border, just a same-color band along the inside edge) —
     // combined with a soft drop shadow for depth on the actual freeze-pane boundary. Every other
-    // frozen column needs the same inset-shadow treatment on its own right edge too (a plain,
-    // border-colored one) — without it, that boundary's real border vanishes the same way,
-    // showing as a blank gap between two adjacent frozen headers (only ever noticed once a
-    // bucket had two frozen columns with actual text back-to-back, e.g. IRP L1's Candidate ID +
-    // Candidate Name with no Candidate Resume column between them to hide the missing border).
+    // frozen column gets the same inset-shadow treatment on its own right edge too (a plain,
+    // border-colored one), since without it that boundary's real border vanishes the same way.
     boxShadow: colIndex === freezeCount - 1
       ? `inset -3px 0 0 0 ${C.accent}, 3px 0 6px rgba(0,0,0,0.25)`
       : `inset -1px 0 0 0 ${C.border}`,
