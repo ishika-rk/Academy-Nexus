@@ -7543,7 +7543,7 @@ export default function App() {
       <div style={{ width: 230, background: C.surface, borderRight: `1px solid ${C.border}`, display: "flex", flexDirection: "column", position: "fixed", top: 0, left: 0, height: "100vh", zIndex: 100 }}>
         {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 18px", borderBottom: `1px solid ${C.border}` }}>
-          <img src="/logo-mark.png" alt="Academy Nexus" style={{ width: 32, height: 32, flexShrink: 0, objectFit: "contain" }} />
+          <img src="/logo-mark.png" alt="Academy Nexus" style={{ width: 36, height: "auto", flexShrink: 0, objectFit: "contain" }} />
           <div>
             <div style={{ fontWeight: 900, fontSize: 13, letterSpacing: -0.3 }}>Academy Nexus</div>
             <div style={{ fontSize: 10, color: C.muted, fontWeight: 600, letterSpacing: 0.5 }}>ASSESSMENT PLATFORM</div>
