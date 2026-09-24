@@ -5069,8 +5069,15 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
     // neighbor's edge win as it slides underneath. An inset box-shadow paints inside the cell's
     // own box instead of participating in that border-collapse resolution, so it stays put and
     // stays on top (it's not a real border, just a same-color band along the inside edge) —
-    // combined with a soft drop shadow for depth.
-    boxShadow: colIndex === freezeCount - 1 ? `inset -3px 0 0 0 ${C.accent}, 3px 0 6px rgba(0,0,0,0.25)` : undefined,
+    // combined with a soft drop shadow for depth on the actual freeze-pane boundary. Every other
+    // frozen column needs the same inset-shadow treatment on its own right edge too (a plain,
+    // border-colored one) — without it, that boundary's real border vanishes the same way,
+    // showing as a blank gap between two adjacent frozen headers (only ever noticed once a
+    // bucket had two frozen columns with actual text back-to-back, e.g. IRP L1's Candidate ID +
+    // Candidate Name with no Candidate Resume column between them to hide the missing border).
+    boxShadow: colIndex === freezeCount - 1
+      ? `inset -3px 0 0 0 ${C.accent}, 3px 0 6px rgba(0,0,0,0.25)`
+      : `inset -1px 0 0 0 ${C.border}`,
   } : {};
 
   // Final Score, Interview Integrity Score, Verdict Band, Clearance Status, and Levels are the
