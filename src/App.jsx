@@ -4534,6 +4534,7 @@ const INTERVIEW_BUCKETS = [
   { id: "DSA", label: "Programming with Problem Solving (DSA)", subheaders: [] },
   { id: "SWE", label: "Software Engineering Fundamentals", subheaders: [] },
   { id: "BACKEND", label: "Backend Development", subheaders: [] },
+  { id: "IRPL1", label: "IRP L1", subheaders: [] },
 ];
 
 const NXTMOCK_COLUMNS = [
@@ -4641,6 +4642,53 @@ const BUCKET_B_TR2_COLUMNS = [
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score ( out of 10 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
+  { key: "status", label: "Clearance Status" },
+];
+
+// IRP L1 — added 2026-09-24, standalone Interviews bucket (own top-level tab, no subheaders).
+// Same three-part rubric shape/names as Bucket B's TR1 (see BUCKET_B_TR1_GROUPS above), plus a
+// Part N Remarks column after each part's Avg and a Communication section, per a scorecard
+// template screenshot the user gave directly. Rubric field mapping is UNCONFIRMED — no real
+// completed submission checked yet, same starting point every other bucket began at (see
+// fillIrpL1RubricColumns). No templateName routing string given yet either, so this slot isn't
+// wired into DIRECT_TEMPLATE_SLOTS/parseAcademySlot — add one there once the Interview Coordinator
+// App's exact template name for this round is known, or this table stays permanently empty.
+const IRP_L1_GROUPS = {
+  part1: { name: "Part 1: Take-Home Assignment Drill-Down", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  part2: { name: "Part 2: Frontend Conceptual Discussion", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  part3: { name: "Part 3: React Live Coding", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+  communication: { name: "Communication", header: "#C00000", headerText: "#fff", sub: "#F2DCDB", subText: "#1f2937" },
+};
+
+const IRP_L1_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
+  { key: "solutionOwnershipDepth", label: "Solution Ownership & Depth", group: IRP_L1_GROUPS.part1 },
+  { key: "architecturalDecisionsTradeoffs", label: "Architectural Decisions & Trade-offs", group: IRP_L1_GROUPS.part1 },
+  { key: "edgeCasesLimitationsAwareness", label: "Edge Cases & Limitations Awareness", group: IRP_L1_GROUPS.part1 },
+  { key: "part1Avg", label: "Part 1 Avg", group: IRP_L1_GROUPS.part1 },
+  { key: "part1Remarks", label: "Part 1 Remarks", group: IRP_L1_GROUPS.part1 },
+  { key: "javascript", label: "JavaScript", group: IRP_L1_GROUPS.part2 },
+  { key: "react", label: "React", group: IRP_L1_GROUPS.part2 },
+  { key: "htmlCssWeb", label: "HTML + CSS + Web", group: IRP_L1_GROUPS.part2 },
+  { key: "restApis", label: "REST APIs", group: IRP_L1_GROUPS.part2 },
+  { key: "part2Avg", label: "Part 2 Avg", group: IRP_L1_GROUPS.part2 },
+  { key: "part2Remarks", label: "Part 2 Remarks", group: IRP_L1_GROUPS.part2 },
+  { key: "problemBreakdownPlanning", label: "Problem Breakdown & Planning", group: IRP_L1_GROUPS.part3 },
+  { key: "reactHooksUsage", label: "React & Hooks Usage", group: IRP_L1_GROUPS.part3 },
+  { key: "codeStructureClarity", label: "Code Structure & Clarity", group: IRP_L1_GROUPS.part3 },
+  { key: "part3Avg", label: "Part 3 Avg", group: IRP_L1_GROUPS.part3 },
+  { key: "part3Remarks", label: "Part 3 Remarks", group: IRP_L1_GROUPS.part3 },
+  { key: "communicationRating", label: "Rating (0-5)", group: IRP_L1_GROUPS.communication },
+  { key: "communicationRemarks", label: "Remarks", group: IRP_L1_GROUPS.communication },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score" },
+  { key: "interviewIntegrityScore", label: "Integrity Score" },
   { key: "status", label: "Clearance Status" },
 ];
 
@@ -4863,6 +4911,7 @@ const INTERVIEW_TABLE_COLUMNS = {
   "DSA:": { columns: DSA_COLUMNS, source: "the Interview App" },
   "SWE:": { columns: SWE_FUNDAMENTALS_COLUMNS, source: "the Interview App" },
   "BACKEND:": { columns: BACKEND_COLUMNS, source: "the Interview App" },
+  "IRPL1:": { columns: IRP_L1_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
@@ -5854,6 +5903,28 @@ function fillBackendRubricColumns(row, iv) {
   return row;
 }
 
+// IRP L1's domain shape is unconfirmed (no real submission synced yet) — same starting point
+// SWE/Backend began at. Mirrors fillBackendRubricColumns' structure (Avg columns read
+// domain.domain_rating, Remarks columns read domain.domain_remarks, other criterion columns fall
+// back to label-derivation via labelToFieldKey) since that's the convention most buckets settled
+// on, but every field name here is a guess until checked against a real doc.
+function fillIrpL1RubricColumns(row, iv) {
+  const domains = iv.domains || {};
+  for (const col of IRP_L1_COLUMNS) {
+    if (!col.group || row[col.key] !== undefined) continue;
+    const domain = domains[groupNameToDomainKey(col.group.name)] || {};
+    if (/Avg$/.test(col.key) || col.key === "communicationRating") {
+      row[col.key] = round2(domain.domain_rating ?? "");
+    } else if (col.key.endsWith("Remarks")) {
+      row[col.key] = domain.domain_remarks || "";
+    } else {
+      const fieldKey = labelToFieldKey(col.label);
+      row[col.key] = round2(domain.cards?.[0]?.[fieldKey] ?? "");
+    }
+  }
+  return row;
+}
+
 const ACADEMY_ROW_BUILDERS = {
   // Bucket A currently has no live data from the Interview Coordinator App and an unconfirmed
   // rubric naming convention (its groups don't follow the "Part N: ..." pattern used elsewhere) —
@@ -6002,12 +6073,25 @@ const ACADEMY_ROW_BUILDERS = {
     if (common._statusDataMismatch) row.levels = "";
     return row;
   },
+  // No templateName routing exists for this slot yet (see IRP_L1_COLUMNS comment), so nothing
+  // will actually reach this builder until DIRECT_TEMPLATE_SLOTS gets an entry pointing at
+  // "IRPL1:". Final Score/Clearance Status formulas also aren't defined yet — left blank rather
+  // than guessed, same as "A:TR1" above.
+  "IRPL1:": (iv) => fillIrpL1RubricColumns({
+    ...academyCommonFields(iv),
+    overallRemarks: iv.remarks || "",
+    finalScore: "",
+    interviewIntegrityScore: integrityScore(iv),
+    _integrityDetails: iv.domains?.integrity || null,
+    status: "",
+  }, iv),
 };
 
 // Slots shown in the stakeholder/ops stats overview at the top of the Interviews page.
 // "A:TR1" is deliberately excluded — its row builder above is a placeholder with no live
 // rubric data or clearance logic yet ("Bucket A currently has no live data from the
-// Interview Coordinator App"), so there's nothing real to summarize for it.
+// Interview Coordinator App"), so there's nothing real to summarize for it. "IRPL1:" is excluded
+// for the same reason — no templateName routing or score/clearance formula defined yet.
 const INTERVIEW_STATS_SLOTS = [
   { slotKey: "B:TR1",    bucketId: "B",        subTab: "TR1", label: "Bucket B — TR1" },
   { slotKey: "B:TR2",    bucketId: "B",        subTab: "TR2", label: "Bucket B — TR2" },
