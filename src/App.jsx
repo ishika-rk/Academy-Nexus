@@ -5298,6 +5298,9 @@ const DIRECT_TEMPLATE_SLOTS = {
   // Exact templateName string given directly 2026-09-15, NOT yet verified against a real synced
   // doc — if this table stays empty after a sync, check this string first.
   "Backend Development": "BACKEND:",
+  // Exact templateName string given directly 2026-09-25, NOT yet verified against a real synced
+  // doc — if this table stays empty after a sync, check this string first.
+  "IRP L1 Human Interview": "IRPL1:",
 };
 function parseAcademySlot(templateName) {
   const name = (templateName || "").trim();
