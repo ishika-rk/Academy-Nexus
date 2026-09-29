@@ -6136,7 +6136,12 @@ const ACADEMY_ROW_BUILDERS = {
     finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
-    status: "",
+    // 70% cutoff, applied uniformly regardless of old/new rubric version. iv.finalVerdict is on
+    // the same 0-5 scale scaleOutOfFiveToHundred/ToFifteen convert from elsewhere — 70% of 5 is
+    // 3.5. Blank Final Score (no data) stays blank rather than defaulting to Not Cleared.
+    status: (iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "")
+      ? ""
+      : (Number(iv.finalVerdict) >= 3.5 ? "Cleared" : "Not Cleared"),
   }, iv),
 };
 
