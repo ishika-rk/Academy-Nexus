@@ -4648,11 +4648,9 @@ const BUCKET_B_TR2_COLUMNS = [
 // IRP L1 — added 2026-09-24, standalone Interviews bucket (own top-level tab, no subheaders).
 // Same three-part rubric shape/names as Bucket B's TR1 (see BUCKET_B_TR1_GROUPS above), plus a
 // Part N Remarks column after each part's Avg and a Communication section, per a scorecard
-// template screenshot the user gave directly. Rubric field mapping is UNCONFIRMED — no real
-// completed submission checked yet, same starting point every other bucket began at (see
-// fillIrpL1RubricColumns). No templateName routing string given yet either, so this slot isn't
-// wired into DIRECT_TEMPLATE_SLOTS/parseAcademySlot — add one there once the Interview Coordinator
-// App's exact template name for this round is known, or this table stays permanently empty.
+// template screenshot the user gave directly. Routed via DIRECT_TEMPLATE_SLOTS["IRP L1 Human
+// Interview"] = "IRPL1:" (exact string given directly 2026-09-25). Rubric field mapping confirmed
+// against a real completed submission 2026-09-29 — see fillIrpL1RubricColumns.
 const IRP_L1_GROUPS = {
   part1: { name: "Part 1: Take-Home Assignment Drill-Down", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
   part2: { name: "Part 2: Frontend Conceptual Discussion", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
@@ -5921,23 +5919,50 @@ function fillBackendRubricColumns(row, iv) {
   return row;
 }
 
-// IRP L1's domain shape is unconfirmed (no real submission synced yet) — same starting point
-// SWE/Backend began at. Mirrors fillBackendRubricColumns' structure (Avg columns read
-// domain.domain_rating, Remarks columns read domain.domain_remarks, other criterion columns fall
-// back to label-derivation via labelToFieldKey) since that's the convention most buckets settled
-// on, but every field name here is a guess until checked against a real doc.
+// IRP L1's domain shape confirmed against a real synced submission, 2026-09-29 (via the temporary
+// rawDomainsDebug hook on Candidate ID, since removed). Findings that differ from the generic
+// fillRubricColumns convention:
+// - Domain keys for Part 1/2/3 DO match plain label-derivation (groupNameToDomainKey), but
+//   Communication's real domain key is "communication_skills", not the derived "communication" —
+//   see IRP_L1_DOMAIN_KEY_OVERRIDES.
+// - Every criterion field inside cards[0] matches label-derivation exactly (labelToFieldKey) —
+//   confirmed for all 10 Part 1/2/3 criteria.
+// - Part N Remarks has no semantic domain_remarks field the way Communication/Overall Remarks do —
+//   Part 1/2/3 each carry one opaque sibling field alongside cards/descriptors instead
+//   (see IRP_L1_PART_REMARKS_FIELD_KEYS). Communication Remarks and Overall Remarks DO use the
+//   plain semantic domain_remarks key, same convention as DSA/Backend.
+// Only confirmed against one submission so far (and Communication was entirely unscored on it) —
+// re-verify if a second completed IRP L1 interview surfaces something different.
+const IRP_L1_DOMAIN_KEY_OVERRIDES = {
+  Communication: "communication_skills",
+};
+const IRP_L1_PART_REMARKS_FIELD_KEYS = {
+  part1Remarks: "field_8r9l6",
+  part2Remarks: "field_c88gn",
+  part3Remarks: "field_m9e2c",
+};
 function fillIrpL1RubricColumns(row, iv) {
   const domains = iv.domains || {};
   for (const col of IRP_L1_COLUMNS) {
     if (!col.group || row[col.key] !== undefined) continue;
-    const domain = domains[groupNameToDomainKey(col.group.name)] || {};
+    const domainKey = IRP_L1_DOMAIN_KEY_OVERRIDES[col.group.name] || groupNameToDomainKey(col.group.name);
+    const domain = domains[domainKey] || {};
     if (/Avg$/.test(col.key) || col.key === "communicationRating") {
       row[col.key] = round2(domain.domain_rating ?? "");
+    } else if (IRP_L1_PART_REMARKS_FIELD_KEYS[col.key]) {
+      row[col.key] = domain[IRP_L1_PART_REMARKS_FIELD_KEYS[col.key]] || "";
     } else if (col.key.endsWith("Remarks")) {
       row[col.key] = domain.domain_remarks || "";
     } else {
       const fieldKey = labelToFieldKey(col.label);
       row[col.key] = round2(domain.cards?.[0]?.[fieldKey] ?? "");
+      // Same descriptors convention as every other bucket — written rationale behind a rating,
+      // shown in a popup on click (see InterviewDataTable).
+      const descriptor = domain.descriptors?.cards?.[0]?.[fieldKey];
+      if (descriptor) {
+        row._domainDescriptors = row._domainDescriptors || {};
+        row._domainDescriptors[col.key] = descriptor;
+      }
     }
   }
   return row;
@@ -6091,13 +6116,19 @@ const ACADEMY_ROW_BUILDERS = {
     if (common._statusDataMismatch) row.levels = "";
     return row;
   },
-  // No templateName routing exists for this slot yet (see IRP_L1_COLUMNS comment), so nothing
-  // will actually reach this builder until DIRECT_TEMPLATE_SLOTS gets an entry pointing at
-  // "IRPL1:". Final Score/Clearance Status formulas also aren't defined yet — left blank rather
-  // than guessed, same as "A:TR1" above.
+  // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-29 — see
+  // fillIrpL1RubricColumns for what's different about this bucket's domain shape. Final Score/
+  // Clearance Status formulas still aren't defined (old vs. new rubric weightage, discussed but
+  // deliberately not built yet) — left blank rather than guessed, same as "A:TR1" above.
   "IRPL1:": (iv) => fillIrpL1RubricColumns({
     ...academyCommonFields(iv),
-    overallRemarks: iv.remarks || "",
+    // Confirmed 2026-09-29: like DSA/Backend, the real overall comment lives at the plain semantic
+    // domains.overall_remarks.domain_remarks key. Some imported IRP L1 docs also have iv.remarks
+    // holding a bookkeeping note ("Old interview | pre-Communication...") added during import to
+    // mark which interviews predate the Communication section/new weightage — that's never real
+    // feedback text, so it's excluded from the iv.remarks fallback rather than shown as-is.
+    overallRemarks: iv.domains?.overall_remarks?.domain_remarks
+      || (/^Old interview\b/i.test((iv.remarks || "").trim()) ? "" : (iv.remarks || "")),
     finalScore: "",
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
