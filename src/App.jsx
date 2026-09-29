@@ -6129,7 +6129,11 @@ const ACADEMY_ROW_BUILDERS = {
     // feedback text, so it's excluded from the iv.remarks fallback rather than shown as-is.
     overallRemarks: iv.domains?.overall_remarks?.domain_remarks
       || (/^Old interview\b/i.test((iv.remarks || "").trim()) ? "" : (iv.remarks || "")),
-    finalScore: "",
+    // Shown as-is from the Interview App, not scaled/recomputed — old vs. new rubric weightage
+    // hasn't been defined, so there's no formula to apply yet (see the earlier discussion on
+    // this). iv.finalVerdict is the same raw field every other bucket scales; here it's passed
+    // through untouched.
+    finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
     status: "",
