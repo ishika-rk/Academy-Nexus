@@ -5492,6 +5492,17 @@ function bucketBTR2ClearanceStatus(iv) {
   return Number.isFinite(score) && score >= 7 ? "Cleared" : "Not Cleared";
 }
 
+// Flat 70% cutoff, given directly 2026-09-29 (applies uniformly regardless of old/new rubric
+// version — no outcome/band override like the other buckets' clearance formulas). Non-completed
+// interviews (no_show, cancelled, scheduled, ...) pass their raw iv.status through unchanged, same
+// convention as every other bucket, instead of rendering blank like a genuinely missing score
+// would. A completed interview with no Final Score yet stays blank rather than guessing.
+function irpL1ClearanceStatus(iv) {
+  if (iv.status !== "completed") return iv.status || "";
+  if (iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "") return "";
+  return Number(iv.finalVerdict) >= 3.5 ? "Cleared" : "Not Cleared";
+}
+
 // Frontend Development / DSA's Clearance Status, rule given 2026-09-15: for a completed
 // interview, Cleared/Not Cleared is derived from Verdict Band — Strong Hire/Medium Hire ->
 // Cleared, Low Hire/Reject -> Not Cleared — rather than the Interview App's own
@@ -6136,12 +6147,7 @@ const ACADEMY_ROW_BUILDERS = {
     finalScore: round2(iv.finalVerdict ?? ""),
     interviewIntegrityScore: integrityScore(iv),
     _integrityDetails: iv.domains?.integrity || null,
-    // 70% cutoff, applied uniformly regardless of old/new rubric version. iv.finalVerdict is on
-    // the same 0-5 scale scaleOutOfFiveToHundred/ToFifteen convert from elsewhere — 70% of 5 is
-    // 3.5. Blank Final Score (no data) stays blank rather than defaulting to Not Cleared.
-    status: (iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "")
-      ? ""
-      : (Number(iv.finalVerdict) >= 3.5 ? "Cleared" : "Not Cleared"),
+    status: irpL1ClearanceStatus(iv),
   }, iv),
 };
 
