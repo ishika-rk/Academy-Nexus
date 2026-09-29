@@ -6154,8 +6154,9 @@ const ACADEMY_ROW_BUILDERS = {
 // Slots shown in the stakeholder/ops stats overview at the top of the Interviews page.
 // "A:TR1" is deliberately excluded — its row builder above is a placeholder with no live
 // rubric data or clearance logic yet ("Bucket A currently has no live data from the
-// Interview Coordinator App"), so there's nothing real to summarize for it. "IRPL1:" is excluded
-// for the same reason — no templateName routing or score/clearance formula defined yet.
+// Interview Coordinator App"), so there's nothing real to summarize for it. "IRPL1:" now has
+// routing, confirmed rubric mapping, and a Final Score/Clearance Status formula (see
+// ACADEMY_ROW_BUILDERS), so it's included below like every other live bucket.
 const INTERVIEW_STATS_SLOTS = [
   { slotKey: "B:TR1",    bucketId: "B",        subTab: "TR1", label: "Bucket B — TR1" },
   { slotKey: "B:TR2",    bucketId: "B",        subTab: "TR2", label: "Bucket B — TR2" },
@@ -6164,6 +6165,7 @@ const INTERVIEW_STATS_SLOTS = [
   { slotKey: "DSA:",     bucketId: "DSA",      subTab: "",    label: "Programming with Problem Solving (DSA)" },
   { slotKey: "SWE:",     bucketId: "SWE",      subTab: "",    label: "Software Engineering Fundamentals" },
   { slotKey: "BACKEND:", bucketId: "BACKEND",  subTab: "",    label: "Backend Development" },
+  { slotKey: "IRPL1:",   bucketId: "IRPL1",    subTab: "",    label: "IRP L1" },
 ];
 
 // Tallies a built row set by a key, dropping blanks — used for Verdict Band and Levels so a
