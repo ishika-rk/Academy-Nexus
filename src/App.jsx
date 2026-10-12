@@ -62,7 +62,7 @@ const getExamCategoryHead = (e) => {
 // ─── Roles & Permissions ──────────────────────────────────────────────────────
 const PERMISSIONS = {
   super_admin: ["*"],
-  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "results.read", "expenses.read", "interviews.read", "interviews.sync"],
+  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "results.read", "expenses.read", "interviews.read", "interviews.sync", "interviews.delete"],
   poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write", "results.read", "expenses.read", "expenses.write", "interviews.read"],
   content:     ["exam.read", "student.count", "configs.write", "generate", "results.read", "interviews.read"],
   // Deliberately minimal by default — meant for roles scoped to a single tab (e.g. a POC who
@@ -73,10 +73,13 @@ const PERMISSIONS = {
 // live doc only self-seeds from PERMISSIONS once (on first-ever creation), so any action
 // introduced later has to be topped up into an already-existing doc explicitly, or roles
 // other than super_admin silently never get it even though PERMISSIONS says they should.
-// interviews.sync deliberately NOT listed here — the top-up below applies a new action to every
-// role equally, which would hand it to poc/content/interview_poc too. It's meant for Admin/Super
-// Admin only, so instead of auto-granting it broadly, it's toggled on for Admin once, by hand, in
-// the Team & Roles matrix below.
+// interviews.sync and interviews.delete deliberately NOT listed here — the top-up below applies a
+// new action to every role equally, which would hand it to poc/content/interview_poc too. Both are
+// meant for Admin/Super Admin only, so instead of auto-granting broadly, each is toggled on for
+// Admin once, by hand, in the Team & Roles matrix below. For interviews.delete specifically: on an
+// already-seeded settings/permissions doc (any deployment from before this was added), a
+// super_admin needs to open Team & Roles and tick it on for Admin once — PERMISSIONS.admin above
+// only applies to a brand-new doc's first-ever seed.
 const NEW_PERMISSION_ACTIONS = ["expenses.read", "expenses.write", "results.read", "interviews.read"];
 let activePermissions = { ...PERMISSIONS };
 function can(role, action) {
@@ -5013,7 +5016,7 @@ function StatusFilterHeader({ label, options, selected, onChange, thStyle, rowSp
   );
 }
 
-function InterviewDataTable({ columns, rows, source, exportLabel }) {
+function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onRequestDelete }) {
   const [expanded, setExpanded] = useState(null); // { label, value } | null
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
@@ -5140,6 +5143,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
         <table style={{ borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
           <colgroup>
             {columns.map(col => <col key={col.key} style={{ width: INTERVIEW_COL_WIDTH }} />)}
+            {canDelete && <col key="_actions" style={{ width: 52 }} />}
           </colgroup>
           <thead>
             {hasGroups ? (
@@ -5148,6 +5152,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                   {segments.map((seg, i) => seg.group ? (
                     <th key={i} colSpan={seg.cols.length} style={{ ...thBase, textAlign: "center", background: seg.group.header, color: seg.group.headerText, border: `1px solid ${seg.group.header}` }}>{seg.group.name}</th>
                   ) : renderUngroupedTh(seg.cols[0], 2, columns.findIndex(c => c.key === seg.cols[0].key)))}
+                  {canDelete && <th rowSpan={2} style={{ ...thBase, textAlign: "center", background: C.surfaceAlt }} />}
                 </tr>
                 <tr>
                   {segments.filter(seg => seg.group).flatMap((seg, si) => seg.cols.map((col, ci) => (
@@ -5158,20 +5163,21 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
             ) : (
               <tr style={{ background: C.surfaceAlt }}>
                 {columns.map((col, colIndex) => renderUngroupedTh(col, undefined, colIndex))}
+                {canDelete && <th style={{ ...thBase, textAlign: "center", background: C.surfaceAlt }} />}
               </tr>
             )}
           </thead>
           <tbody>
             {filteredRows.length === 0 ? (
               <tr>
-                <td colSpan={columns.length} style={{ padding: "28px 12px", textAlign: "center", color: C.muted, fontSize: 12, border: `1px solid ${C.border}` }}>
+                <td colSpan={columns.length + (canDelete ? 1 : 0)} style={{ padding: "28px 12px", textAlign: "center", color: C.muted, fontSize: 12, border: `1px solid ${C.border}` }}>
                   {rows.length === 0 ? `No data yet — this will populate from ${source}.` : "No rows match your search/filter."}
                 </td>
               </tr>
             ) : pageRows.map((row, i) => {
               const rowBg = i % 2 === 0 ? "#fff" : C.surfaceAlt;
               return (
-              <tr key={row.id ?? i} style={{ background: rowBg }}>
+              <tr key={row._docId ?? i} style={{ background: rowBg }}>
                 {columns.map((col, colIndex) => {
                   const value = row[col.key];
                   const hasValue = value !== undefined && value !== null && value !== "";
@@ -5220,6 +5226,19 @@ function InterviewDataTable({ columns, rows, source, exportLabel }) {
                     </td>
                   );
                 })}
+                {canDelete && (
+                  <td style={{ ...tdBase, textAlign: "center", cursor: "pointer" }}>
+                    <button
+                      onClick={() => onRequestDelete(row)}
+                      title="Delete this interview"
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 4, color: C.muted, display: "inline-flex" }}
+                      onMouseEnter={e => e.currentTarget.style.color = C.red}
+                      onMouseLeave={e => e.currentTarget.style.color = C.muted}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 4.5h10M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8.4a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </button>
+                  </td>
+                )}
               </tr>
               );
             })}
@@ -5312,6 +5331,11 @@ function parseAcademySlot(templateName) {
 
 function academyCommonFields(iv) {
   return {
+    // Firestore doc id (interviews/{id}) — carried on every row so a delete action always has a
+    // concrete target, regardless of which bucket/row-builder produced the row. Underscore-
+    // prefixed like every other internal-use-only field (_statusDataMismatch, _integrityDetails,
+    // ...) so it never gets treated as a displayable column.
+    _docId: iv.id,
     // candidateUid (Academy's own student UID) was confirmed and added by the Interview App
     // team, 2026-08-28 — this column was previously mislabeled, showing the interview's own
     // doc id instead. iv.id kept as a fallback for docs synced before candidateUid existed.
@@ -6128,9 +6152,9 @@ const ACADEMY_ROW_BUILDERS = {
     return row;
   },
   // Rubric rating/remarks mapping confirmed against a real completed submission, 2026-09-29 — see
-  // fillIrpL1RubricColumns for what's different about this bucket's domain shape. Final Score/
-  // Clearance Status formulas still aren't defined (old vs. new rubric weightage, discussed but
-  // deliberately not built yet) — left blank rather than guessed, same as "A:TR1" above.
+  // fillIrpL1RubricColumns for what's different about this bucket's domain shape. Final Score is
+  // shown as-is from the app (no weighting formula defined for old vs. new rubric yet); Clearance
+  // Status uses a flat 70% cutoff via irpL1ClearanceStatus, given directly 2026-09-29.
   "IRPL1:": (iv) => fillIrpL1RubricColumns({
     ...academyCommonFields(iv),
     // Confirmed 2026-09-29: like DSA/Backend, the real overall comment lives at the plain semantic
@@ -6333,6 +6357,8 @@ function InterviewsPage({ role }) {
   const [listenerError, setListenerError] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState(null);
+  const [confirmDeleteInterview, setConfirmDeleteInterview] = useState(null); // { _docId, candidateName } | null
+  const canDeleteInterview = can(role, "interviews.delete");
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -6365,6 +6391,16 @@ function InterviewsPage({ role }) {
     } finally {
       setSyncing(false);
     }
+  };
+
+  // Hard delete (per explicit decision, 2026-10-12) — a row removed because it was genuinely
+  // deleted on the Interview Coordinator App's side has nothing to recover, and a row removed
+  // because it was a stray duplicate shouldn't linger "just in case". firestore.rules gates the
+  // interviews collection on isSignedIn() only (same as every other internal collection — see the
+  // comment there); canDeleteInterview (interviews.sync-style, Admin/Super Admin only) is what
+  // actually restricts this client-side, matching house convention.
+  const onDeleteInterview = async (docId) => {
+    await deleteDoc(doc(db, "interviews", docId));
   };
 
   const selectBucket = (id) => {
@@ -6435,11 +6471,25 @@ function InterviewsPage({ role }) {
               rows={activeRows}
               source={activeTable.source}
               exportLabel={`${activeBucket.label}${subTab ? ` - ${subTab}` : ""}`.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "")}
+              canDelete={canDeleteInterview}
+              onRequestDelete={setConfirmDeleteInterview}
             />
           ) : (
             <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
           )}
         </>
+      )}
+
+      {confirmDeleteInterview && (
+        <Modal title="Delete Interview" onClose={() => setConfirmDeleteInterview(null)} width={420}>
+          <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
+            Delete the interview for <strong>{confirmDeleteInterview.candidateName || "this candidate"}</strong>? This cannot be undone. If it still exists on the Interview Coordinator App's side, the next sync will pull it back in.
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDeleteInterview(null)}>Cancel</Btn>
+            <Btn variant="danger" onClick={async () => { await onDeleteInterview(confirmDeleteInterview._docId); setConfirmDeleteInterview(null); }}>Delete</Btn>
+          </div>
+        </Modal>
       )}
     </div>
   );
@@ -6957,6 +7007,7 @@ const PERMISSION_ROWS = [
   { group: "Results",    action: "results.write", label: "Import results / send to interview" },
   { group: "Interviews", action: "interviews.read", label: "View Interviews tab" },
   { group: "Interviews", action: "interviews.sync", label: "Sync interviews from the Interview Coordinator App" },
+  { group: "Interviews", action: "interviews.delete", label: "Delete an interview row" },
   { group: "Drive Expenses", action: "expenses.read",  label: "View drive expenses" },
   { group: "Drive Expenses", action: "expenses.write", label: "Add / edit / delete drive expenses" },
   { group: "Admin",      action: "team",          label: "Manage team & roles", superAdminOnly: true },
