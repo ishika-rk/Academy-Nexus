@@ -5336,6 +5336,11 @@ function academyCommonFields(iv) {
     // prefixed like every other internal-use-only field (_statusDataMismatch, _integrityDetails,
     // ...) so it never gets treated as a displayable column.
     _docId: iv.id,
+    // The full raw synced doc (minus its own id field) — kept only so a delete action can restore
+    // every original field via Undo, same as onUndoDelete does for exams. The built row above only
+    // has display-shaped fields (label-derived rating columns, scaled scores, ...), not enough to
+    // reconstruct the original doc.
+    _rawDoc: (() => { const { id, ...rest } = iv; return rest; })(),
     // candidateUid (Academy's own student UID) was confirmed and added by the Interview App
     // team, 2026-08-28 — this column was previously mislabeled, showing the interview's own
     // doc id instead. iv.id kept as a fallback for docs synced before candidateUid existed.
@@ -6357,7 +6362,8 @@ function InterviewsPage({ role }) {
   const [listenerError, setListenerError] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState(null);
-  const [confirmDeleteInterview, setConfirmDeleteInterview] = useState(null); // { _docId, candidateName } | null
+  const [confirmDeleteInterview, setConfirmDeleteInterview] = useState(null); // { _docId, _rawDoc, candidateName } | null
+  const [deletedInterview, setDeletedInterview] = useState(null); // { docId, data, candidateName } | null
   const canDeleteInterview = can(role, "interviews.delete");
 
   useEffect(() => {
@@ -6401,6 +6407,15 @@ function InterviewsPage({ role }) {
   // actually restricts this client-side, matching house convention.
   const onDeleteInterview = async (docId) => {
     await deleteDoc(doc(db, "interviews", docId));
+  };
+
+  // Same Undo pattern as onUndoDelete for exams — re-creates the doc at its original id with its
+  // original data (captured in _rawDoc before the delete). Doesn't survive a sync running in
+  // between (if the interview still exists upstream, the next sync writes its own copy anyway; if
+  // it was genuinely deleted upstream, Undo here just brings back our local copy, same as it would
+  // for any other hard-deleted row).
+  const onUndoDeleteInterview = async (docId, data) => {
+    await setDoc(doc(db, "interviews", docId), data);
   };
 
   const selectBucket = (id) => {
@@ -6483,11 +6498,42 @@ function InterviewsPage({ role }) {
       {confirmDeleteInterview && (
         <Modal title="Delete Interview" onClose={() => setConfirmDeleteInterview(null)} width={420}>
           <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
-            Delete the interview for <strong>{confirmDeleteInterview.candidateName || "this candidate"}</strong>? This cannot be undone. If it still exists on the Interview Coordinator App's side, the next sync will pull it back in.
+            Delete the interview for <strong>{confirmDeleteInterview.candidateName || "this candidate"}</strong>? You can undo this right after, but if it still exists on the Interview Coordinator App's side, the next sync will pull it back in regardless.
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmDeleteInterview(null)}>Cancel</Btn>
-            <Btn variant="danger" onClick={async () => { await onDeleteInterview(confirmDeleteInterview._docId); setConfirmDeleteInterview(null); }}>Delete</Btn>
+            <Btn variant="danger" onClick={async () => {
+              const toDelete = confirmDeleteInterview;
+              await onDeleteInterview(toDelete._docId);
+              setConfirmDeleteInterview(null);
+              setDeletedInterview({ docId: toDelete._docId, data: toDelete._rawDoc, candidateName: toDelete.candidateName });
+            }}>Delete</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {deletedInterview && (
+        <Modal title="" onClose={() => setDeletedInterview(null)} width={420}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#fef2f2", border: "1.5px solid #fca5a5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </div>
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 18, color: C.text }}>Interview Deleted</div>
+                <div style={{ fontSize: 13, color: C.muted, marginTop: 2 }}>{deletedInterview.candidateName || "Candidate"}</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={async () => { await onUndoDeleteInterview(deletedInterview.docId, deletedInterview.data); setDeletedInterview(null); }}
+                style={{ flex: 1, background: C.surface, border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "11px 0", fontSize: 13, fontWeight: 700, cursor: "pointer", color: C.text, fontFamily: "inherit" }}
+              >Undo Delete</button>
+              <button
+                onClick={() => setDeletedInterview(null)}
+                style={{ flex: 1, background: C.accent, border: "none", borderRadius: 8, padding: "11px 0", fontSize: 13, fontWeight: 700, cursor: "pointer", color: "#fff", fontFamily: "inherit" }}
+              >Done</button>
+            </div>
           </div>
         </Modal>
       )}
