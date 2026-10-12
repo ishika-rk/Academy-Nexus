@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, Fragment } from "react";
 import { db, auth, googleProvider, storage } from "./firebase";
-import { collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, query, orderBy } from "firebase/firestore";
+import { collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, query, orderBy, writeBatch } from "firebase/firestore";
 import { onAuthStateChanged, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 
@@ -3743,6 +3743,8 @@ const RESULTS_HEADER_MAP = {
   score:     ["score"],
   status:    ["status"],
   bucket:    ["bucket"],
+  interviewTemplate: ["interview template", "template", "interview"],
+  eligibilityStatus: ["eligibility status", "eligibility", "eligible", "eligible for interview"],
 };
 function getCol(row, field) {
   const names = RESULTS_HEADER_MAP[field];
@@ -3764,7 +3766,40 @@ function clearanceBadge(status) {
   return <Badge color="gray">{s}</Badge>;
 }
 
-function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, role }) {
+// ─── Interview Eligibility ─────────────────────────────────────────────────────
+// Program POCs upload who was eligible for each interview template, so the Interviews Overview
+// can show a real funnel (eligible -> scheduled -> attempted -> cleared) instead of only counting
+// whoever happened to get interviewed. One doc per student per template in interviewEligibility.
+
+const ELIGIBILITY_CSV_HEADERS = ["Student UID", "Student Name", "Email ID", "Interview Template", "Eligibility Status"];
+
+// Accepts either the name shown on the Interviews page ("Bucket B — TR1", "IRP L1") or the Interview
+// App's own templateName ("Academy Bucket B TR1", "IRP L1 Human Interview"), so a POC can use
+// whichever they have. Compared with spacing/punctuation stripped, since "—" vs "-" is easy to mistype.
+function templateSlotFromCsv(raw) {
+  const direct = parseAcademySlot(raw);
+  if (direct) return direct;
+  const norm = (v) => (v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const n = norm(raw);
+  if (!n) return null;
+  const slot = INTERVIEW_STATS_SLOTS.find(sl => norm(sl.label) === n || norm(sl.slotKey) === n);
+  return slot ? slot.slotKey : null;
+}
+function slotLabel(slotKey) {
+  return INTERVIEW_STATS_SLOTS.find(sl => sl.slotKey === slotKey)?.label || slotKey;
+}
+// null = unrecognised value (row gets skipped rather than guessed at).
+function parseEligibility(raw) {
+  const l = (raw || "").trim().toLowerCase();
+  if (["eligible", "yes", "y", "true", "1"].includes(l)) return true;
+  if (["not eligible", "ineligible", "no", "n", "false", "0"].includes(l)) return false;
+  return null;
+}
+function eligibilityDocId(studentId, slotKey) {
+  return `${studentId}__${slotKey}`.replace(/[/:]/g, "_");
+}
+
+function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, onImportEligibility, onDeleteEligibility, role }) {
   const [programTab, setProgramTab] = useState("online");
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PAGE_SIZE = 10;
@@ -3774,17 +3809,23 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [eligTemplateFilter, setEligTemplateFilter] = useState("");
   const fileInputRef = useRef(null);
 
-  const PROGRAMS = [{ id: "online", label: "Online" }, { id: "offline", label: "Offline" }];
-  useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); }, [programTab]);
+  const PROGRAMS = [{ id: "online", label: "Online" }, { id: "offline", label: "Offline" }, { id: "eligibility", label: "Interview Eligibility" }];
+  const isEligTab = programTab === "eligibility";
+  useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); }, [programTab, eligTemplateFilter]);
 
-  const tabResults = (results || [])
-    .filter(r => (r.program || "online") === programTab)
-    .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || ""));
+  const tabResults = isEligTab
+    ? (eligibility || [])
+        .filter(e => !eligTemplateFilter || e.templateSlot === eligTemplateFilter)
+        .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || "") || (a.name || "").localeCompare(b.name || ""))
+    : (results || [])
+        .filter(r => (r.program || "online") === programTab)
+        .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || ""));
 
   const downloadTemplate = () => {
-    const headers = programTab === "online" ? ONLINE_CSV_HEADERS : OFFLINE_CSV_HEADERS;
+    const headers = isEligTab ? ELIGIBILITY_CSV_HEADERS : programTab === "online" ? ONLINE_CSV_HEADERS : OFFLINE_CSV_HEADERS;
     const csv = [headers].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
@@ -3792,7 +3833,37 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     a.click();
   };
 
+  const importEligibilityCSV = async (file) => {
+    setImportStatus("importing");
+    try {
+      const { rows } = parseCSV(await file.text());
+      const byId = new Map();
+      const unknownTemplates = new Set();
+      let errors = 0;
+      const importedAt = new Date().toISOString();
+      for (const row of rows) {
+        const studentId = getCol(row, "studentId");
+        const rawTemplate = getCol(row, "interviewTemplate");
+        const eligible = parseEligibility(getCol(row, "eligibilityStatus"));
+        const templateSlot = templateSlotFromCsv(rawTemplate);
+        if (!templateSlot && rawTemplate) unknownTemplates.add(rawTemplate);
+        if (!studentId || !templateSlot || eligible === null) { errors++; continue; }
+        const id = eligibilityDocId(studentId, templateSlot);
+        byId.set(id, { id, data: { studentId, name: getCol(row, "name"), email: getCol(row, "email"), templateSlot, eligible, importedAt } });
+      }
+      const existingIds = new Set((eligibility || []).map(e => e.id));
+      const records = [...byId.values()];
+      await onImportEligibility(records);
+      const updated = records.filter(r => existingIds.has(r.id)).length;
+      setImportStatus({ added: records.length - updated, updated, errors, unknownTemplates: [...unknownTemplates] });
+    } catch (err) {
+      console.error("eligibility import failed:", err);
+      setImportStatus({ added: 0, updated: 0, errors: 1, failed: err.message || "Import failed" });
+    }
+  };
+
   const importCSV = async (file) => {
+    if (isEligTab) return importEligibilityCSV(file);
     setImportStatus("importing");
     try {
       const text = await file.text();
@@ -3908,7 +3979,72 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         ))}
       </div>
 
-      {tabResults.length === 0 ? (
+      {isEligTab ? (() => {
+        const all = eligibility || [];
+        const totalPages = Math.max(1, Math.ceil(tabResults.length / RESULTS_PAGE_SIZE));
+        const pageRows = tabResults.slice((resultsPage - 1) * RESULTS_PAGE_SIZE, resultsPage * RESULTS_PAGE_SIZE);
+        const shownEligible = tabResults.filter(e => e.eligible).length;
+        return (<>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+            <select value={eligTemplateFilter} onChange={e => setEligTemplateFilter(e.target.value)} style={{ ...inputS, width: 280 }}>
+              <option value="">All interview templates</option>
+              {INTERVIEW_STATS_SLOTS.map(sl => (
+                <option key={sl.slotKey} value={sl.slotKey}>{sl.label} ({all.filter(e => e.templateSlot === sl.slotKey && e.eligible).length} eligible)</option>
+              ))}
+            </select>
+            <div style={{ fontSize: 12, color: C.muted }}>
+              <strong style={{ color: C.text }}>{shownEligible}</strong> eligible · <strong style={{ color: C.text }}>{tabResults.length - shownEligible}</strong> not eligible
+            </div>
+          </div>
+          {tabResults.length === 0 ? (
+            <EmptyState icon="🎯" title="No eligibility uploaded yet" sub="Upload a CSV of which students are eligible for each interview template — it feeds the funnel on the Interviews Overview." />
+          ) : (
+            <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: C.surfaceAlt }}>
+                    <th style={thBase}>Student</th>
+                    <th style={thBase}>Interview Template</th>
+                    <th style={thBase}>Eligibility</th>
+                    <th style={thBase}>Uploaded</th>
+                    {can(role, "results.write") && <th style={{ ...thBase, width: "1px" }} />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.map((e, i) => {
+                    const cell = { verticalAlign: "middle", background: i % 2 === 0 ? "#fff" : C.surfaceAlt, border: `1px solid ${C.border}`, padding: "8px 12px" };
+                    return (
+                      <tr key={e.id}>
+                        <td style={cell}>
+                          <div style={{ fontWeight: 700, color: C.text }}>{e.name || "—"}</div>
+                          <div style={{ fontSize: 11, color: C.muted }}>{e.studentId}</div>
+                        </td>
+                        <td style={cell}>{slotLabel(e.templateSlot)}</td>
+                        <td style={cell}>{e.eligible ? <Badge color="green">Eligible</Badge> : <Badge color="gray">Not Eligible</Badge>}</td>
+                        <td style={cell}>{e.importedAt ? fmtDate(e.importedAt.slice(0, 10)) : "—"}</td>
+                        {can(role, "results.write") && (
+                          <td style={cell}>
+                            <button onClick={() => setConfirmDelete({ ...e, _kind: "eligibility" })} title="Delete" style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex", color: C.muted }}>
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 16 }}>
+              <Btn variant="secondary" size="sm" onClick={() => setResultsPage(p => Math.max(1, p - 1))} disabled={resultsPage === 1}>Prev</Btn>
+              <span style={{ fontSize: 12, color: C.muted, display: "flex", alignItems: "center", padding: "0 8px" }}>Page {resultsPage} of {totalPages}</span>
+              <Btn variant="secondary" size="sm" onClick={() => setResultsPage(p => Math.min(totalPages, p + 1))} disabled={resultsPage === totalPages}>Next</Btn>
+            </div>
+          )}
+        </>);
+      })() : tabResults.length === 0 ? (
         <EmptyState icon="🏆" title="No results yet" sub="Import results from the Looker Studio dashboard export to get started." />
       ) : (() => {
         const totalPages = Math.ceil(tabResults.length / RESULTS_PAGE_SIZE);
@@ -4008,8 +4144,17 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
       })()}
 
       {showImportModal && (
-        <Modal title="Import Results from CSV" onClose={() => { setShowImportModal(false); setImportStatus(null); }}>
+        <Modal title={isEligTab ? "Import Interview Eligibility from CSV" : "Import Results from CSV"} onClose={() => { setShowImportModal(false); setImportStatus(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {isEligTab ? (
+            <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
+              <div style={{ fontWeight: 700, color: C.text, marginBottom: 4 }}>How it works</div>
+              1. Click <strong>Template</strong> to download the CSV headers: {ELIGIBILITY_CSV_HEADERS.join(", ")}.<br />
+              2. One row per student per interview template. <strong>Interview Template</strong> must be one of: {INTERVIEW_STATS_SLOTS.map(sl => sl.label).join(", ")} (the Interview App's own template name also works). <strong>Eligibility Status</strong> is Eligible / Not Eligible (Yes / No also work).<br />
+              3. Upload the CSV here. If a student + template pair is already uploaded, its status is updated; otherwise a new row is created.<br />
+              Students are matched to interviews by <strong>Student UID</strong>, so it must be the same UID the Interview Coordinator App has.
+            </div>
+            ) : (
             <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
               <div style={{ fontWeight: 700, color: C.text, marginBottom: 4 }}>How it works</div>
               1. Click <strong>Template</strong> to download the expected CSV column headers for the {programTab === "online" ? "Online" : "Offline"} tab.<br />
@@ -4019,6 +4164,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               3. Upload the CSV here — existing rows (matched by Student ID/UID + Exam) are updated, new ones are created.<br />
               Phone Number and Email ID are captured but never shown in this app — they're PII, stored only to pass along to the Interview Coordinator App when a student is sent to interview.
             </div>
+            )}
 
             {importStatus === null && (
               <>
@@ -4049,10 +4195,16 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 <div style={{ background: importStatus.errors > 0 ? "#fef3c7" : "#dcfce7", border: `1px solid ${importStatus.errors > 0 ? "#fde68a" : "#86efac"}`, borderRadius: 8, padding: "12px 16px", fontSize: 13 }}>
                   <div style={{ fontWeight: 700, color: C.text, marginBottom: 6 }}>Import complete</div>
                   <div style={{ color: C.muted, lineHeight: 1.8 }}>
-                    <span style={{ color: C.green, fontWeight: 700 }}>{importStatus.added}</span> results created &nbsp;·&nbsp;
-                    <span style={{ color: C.blue, fontWeight: 700 }}>{importStatus.updated}</span> results updated
-                    {importStatus.errors > 0 && <> &nbsp;·&nbsp; <span style={{ color: C.red, fontWeight: 700 }}>{importStatus.errors}</span> rows skipped (missing Student ID or Exam)</>}
+                    <span style={{ color: C.green, fontWeight: 700 }}>{importStatus.added}</span> {isEligTab ? "rows" : "results"} created &nbsp;·&nbsp;
+                    <span style={{ color: C.blue, fontWeight: 700 }}>{importStatus.updated}</span> {isEligTab ? "rows" : "results"} updated
+                    {importStatus.errors > 0 && <> &nbsp;·&nbsp; <span style={{ color: C.red, fontWeight: 700 }}>{importStatus.errors}</span> rows skipped ({isEligTab ? "missing Student UID, unknown Interview Template, or unrecognised Eligibility Status" : "missing Student ID or Exam"})</>}
                   </div>
+                  {importStatus.failed && <div style={{ color: C.red, marginTop: 6 }}>{importStatus.failed}</div>}
+                  {importStatus.unknownTemplates?.length > 0 && (
+                    <div style={{ color: C.muted, marginTop: 6, fontSize: 12 }}>
+                      Unrecognised Interview Template values: <strong style={{ color: C.text }}>{importStatus.unknownTemplates.join(", ")}</strong>
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                   <Btn variant="secondary" onClick={() => setImportStatus(null)}>Import Another</Btn>
@@ -4065,13 +4217,15 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
       )}
 
       {confirmDelete && (
-        <Modal title="Delete Result" onClose={() => setConfirmDelete(null)} width={420}>
+        <Modal title={confirmDelete._kind === "eligibility" ? "Delete Eligibility" : "Delete Result"} onClose={() => setConfirmDelete(null)} width={420}>
           <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
-            Delete the result for <strong>{confirmDelete.name || confirmDelete.studentId}</strong> — {confirmDelete.examName}? This cannot be undone.
+            {confirmDelete._kind === "eligibility"
+              ? <>Delete <strong>{confirmDelete.name || confirmDelete.studentId}</strong>'s eligibility for {slotLabel(confirmDelete.templateSlot)}? This cannot be undone.</>
+              : <>Delete the result for <strong>{confirmDelete.name || confirmDelete.studentId}</strong> — {confirmDelete.examName}? This cannot be undone.</>}
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmDelete(null)}>Cancel</Btn>
-            <Btn variant="danger" onClick={async () => { await onDeleteResult(confirmDelete.id); setConfirmDelete(null); }}>Delete</Btn>
+            <Btn variant="danger" onClick={async () => { await (confirmDelete._kind === "eligibility" ? onDeleteEligibility : onDeleteResult)(confirmDelete.id); setConfirmDelete(null); }}>Delete</Btn>
           </div>
         </Modal>
       )}
@@ -6211,19 +6365,58 @@ function tallyNonBlank(rows, key) {
   return counts;
 }
 
-// Reuses the same per-slot row builder the table itself renders with, so Completed/Cleared/
-// Verdict/Levels counts can never drift from what someone sees when they click into the slot —
-// no separate copy of any clearance/verdict/level rule lives here.
-function computeSlotStats(academyInterviews, slotKey) {
-  const docs = academyInterviews.filter(iv => parseAcademySlot(iv.templateName) === slotKey);
-  const rows = docs.map(ACADEMY_ROW_BUILDERS[slotKey]);
+// Synced docs carry Firestore Timestamps, ISO strings or plain dates depending on the field.
+function toMillis(v) {
+  if (!v) return 0;
+  if (typeof v.toMillis === "function") return v.toMillis();
+  if (typeof v === "number") return v;
+  const t = Date.parse(v);
+  return isNaN(t) ? 0 : t;
+}
+
+// Funnel per interview template, counted in unique students (candidateUid), not attempts: a
+// student with retries counts once, judged by their latest Cleared/Not Cleared attempt.
+// When eligibility has been uploaded for the template (Results → Interview Eligibility), the
+// funnel is restricted to eligible students and anyone interviewed without being on the list is
+// counted separately as notOnList; with no upload, everyone interviewed is counted and
+// eligible is null.
+// Reuses the same per-slot row builder the table itself renders with, so Cleared/Verdict/Levels
+// can never drift from what someone sees when they click into the slot — no separate copy of any
+// clearance/verdict/level rule lives here.
+function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
+  const byStudent = new Map();
+  for (const iv of academyInterviews) {
+    if (parseAcademySlot(iv.templateName) !== slotKey) continue;
+    const uid = iv.candidateUid || iv.id;
+    const at = toMillis(iv.feedbackSubmittedAt) || toMillis(iv.updatedAt) || toMillis(iv.scheduledDate);
+    if (!byStudent.has(uid)) byStudent.set(uid, []);
+    byStudent.get(uid).push({ iv, row: ACADEMY_ROW_BUILDERS[slotKey](iv), at });
+  }
+
+  const eligibleIds = new Set(eligibility.filter(e => e.templateSlot === slotKey && e.eligible).map(e => e.studentId));
+  const hasEligibility = eligibleIds.size > 0;
+  const funnel = [...byStudent.entries()].filter(([uid]) => !hasEligibility || eligibleIds.has(uid));
+
+  let attempted = 0;
+  const latestRows = [];
+  for (const [, attempts] of funnel) {
+    const completed = attempts.filter(a => a.iv.status === "completed");
+    if (completed.length === 0) continue;
+    attempted++;
+    const decided = completed.filter(a => a.row.status === "Cleared" || a.row.status === "Not Cleared");
+    const pool = decided.length > 0 ? decided : completed;
+    latestRows.push(pool.reduce((best, a) => (a.at > best.at ? a : best)).row);
+  }
+
   return {
-    total: docs.length,
-    completed: docs.filter(d => d.status === "completed").length,
-    cleared: rows.filter(r => r.status === "Cleared").length,
-    notCleared: rows.filter(r => r.status === "Not Cleared").length,
-    verdictCounts: tallyNonBlank(rows, "verdict"),
-    levelsCounts: tallyNonBlank(rows, "levels"),
+    eligible: hasEligibility ? eligibleIds.size : null,
+    scheduled: funnel.length,
+    attempted,
+    notOnList: hasEligibility ? byStudent.size - funnel.length : 0,
+    cleared: latestRows.filter(r => r.status === "Cleared").length,
+    notCleared: latestRows.filter(r => r.status === "Not Cleared").length,
+    verdictCounts: tallyNonBlank(latestRows, "verdict"),
+    levelsCounts: tallyNonBlank(latestRows, "levels"),
   };
 }
 
@@ -6276,8 +6469,15 @@ function StackedBar({ segments, width = 150 }) {
   );
 }
 
-function CompletedCount({ completed }) {
-  return <strong style={{ fontSize: 13, color: C.text }}>{completed}</strong>;
+// A funnel count plus its conversion from the stage it's measured against (e.g. 38 · 76% of
+// eligible). Whole-number percents only, so nothing here ever shows more than 2 decimals.
+function FunnelCount({ value, of, ofLabel }) {
+  return (
+    <div>
+      <strong style={{ fontSize: 13, color: C.text }}>{value}</strong>
+      {of > 0 && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{Math.round((value / of) * 100)}% of {ofLabel}</div>}
+    </div>
+  );
 }
 
 // Lives on its own "Overview" tab (see INTERVIEW_BUCKETS) rather than a panel stacked above the
@@ -6286,15 +6486,15 @@ function CompletedCount({ completed }) {
 // One row per slot rather than one card per slot scales to however many interview types get
 // added later (just more table rows), and Clearance / Verdict Band / Levels each get their own
 // column instead of badges piled together with no way to tell which stat is which.
-function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
+function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }) {
   const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 14px", borderBottom: `1px solid ${C.border}` };
   const tdStyle = { padding: "12px 14px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
 
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>Completion & outcomes, by bucket</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Click a row to open that bucket's table.</div>
+        <div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>Interview funnel, by template</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Eligible → Scheduled → Attempted → Cleared, in unique students. Click a row to open that template's table.</div>
       </div>
 
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
@@ -6302,8 +6502,10 @@ function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: C.surfaceAlt }}>
-                <th style={thStyle}>Bucket / Round</th>
-                <th style={thStyle}>Completed</th>
+                <th style={thStyle}>Interview Template</th>
+                <th style={thStyle}>Eligible</th>
+                <th style={thStyle}>Scheduled</th>
+                <th style={thStyle}>Attempted</th>
                 <th style={thStyle}>Clearance</th>
                 <th style={thStyle}>Verdict Band</th>
                 <th style={thStyle}>Levels</th>
@@ -6311,7 +6513,9 @@ function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
             </thead>
             <tbody>
               {INTERVIEW_STATS_SLOTS.map(slot => {
-                const stats = computeSlotStats(academyInterviews, slot.slotKey);
+                const stats = computeSlotStats(academyInterviews, slot.slotKey, eligibility || []);
+                const base = stats.eligible ?? stats.scheduled;
+                const baseLabel = stats.eligible !== null ? "eligible" : "scheduled";
                 const verdictSegments = VERDICT_BAND_ORDER
                   .filter(b => stats.verdictCounts[b])
                   .map(b => ({ label: b, value: stats.verdictCounts[b], color: VERDICT_BAND_HEX[b] }));
@@ -6326,7 +6530,18 @@ function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                   >
                     <td style={{ ...tdStyle, fontWeight: 700, color: C.text, whiteSpace: "nowrap" }}>{slot.label}</td>
-                    <td style={tdStyle}><CompletedCount completed={stats.completed} /></td>
+                    <td style={tdStyle}>
+                      {stats.eligible === null
+                        ? <span style={{ color: C.muted }} title="No eligibility uploaded for this template yet (Results → Interview Eligibility)">—</span>
+                        : <strong style={{ fontSize: 13, color: C.text }}>{stats.eligible}</strong>}
+                      {stats.notOnList > 0 && (
+                        <div style={{ fontSize: 10.5, color: C.red, marginTop: 2 }} title="Interviewed for this template but not on its eligibility list — not counted in this funnel">
+                          ⚠️ +{stats.notOnList} not on list
+                        </div>
+                      )}
+                    </td>
+                    <td style={tdStyle}><FunnelCount value={stats.scheduled} of={stats.eligible} ofLabel="eligible" /></td>
+                    <td style={tdStyle}><FunnelCount value={stats.attempted} of={base} ofLabel={baseLabel} /></td>
                     <td style={tdStyle}>
                       <StackedBar segments={[
                         { label: "Cleared", value: stats.cleared, color: C.green },
@@ -6342,14 +6557,14 @@ function InterviewStatsOverview({ academyInterviews, onSelectSlot }) {
           </table>
         </div>
         <div style={{ fontSize: 10.5, color: C.muted, padding: "8px 14px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
-          "Completed" counts interview attempts pulled from the Interview Coordinator App, not unique candidates — a candidate can have more than one attempt (retries, re-scheduled rounds).
+          All counts are unique students (matched by Student UID). Scheduled = has at least one interview for the template; Attempted = completed at least one. Clearance, Verdict Band and Levels use each student's latest decided attempt. Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted.
         </div>
       </div>
     </div>
   );
 }
 
-function InterviewsPage({ role }) {
+function InterviewsPage({ role, eligibility }) {
   // Overview is the landing tab — it's also a fix, not just a preference: "A" (the old default)
   // lands on Bucket A / NxtMock, which has no live data wired up at all (see ACADEMY_ROW_BUILDERS),
   // so every fresh visit used to open on an empty table.
@@ -6468,7 +6683,7 @@ function InterviewsPage({ role }) {
       </div>
 
       {bucketTab === "OVERVIEW" ? (
-        <InterviewStatsOverview academyInterviews={academyInterviews} onSelectSlot={jumpToSlot} />
+        <InterviewStatsOverview academyInterviews={academyInterviews} eligibility={eligibility} onSelectSlot={jumpToSlot} />
       ) : (
         <>
           {activeBucket.subheaders.length > 0 && (
@@ -7424,6 +7639,7 @@ export default function App() {
   const [configEntries, setConfigEntries] = useState([]);
   const [publishedAssessments, setPublishedAssessments] = useState([]);
   const [results, setResults] = useState([]);
+  const [eligibility, setEligibility] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [rolesList, setRolesList] = useState([]);
   const [livePerms, setLivePerms] = useState(PERMISSIONS);
@@ -7490,6 +7706,9 @@ export default function App() {
       ),
       onSnapshot(collection(db, "results"), snap =>
         setResults(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      ),
+      onSnapshot(collection(db, "interviewEligibility"), snap =>
+        setEligibility(snap.docs.map(d => ({ id: d.id, ...d.data() })))
       ),
       onSnapshot(collection(db, "driveExpenses"), snap =>
         setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -7674,6 +7893,19 @@ export default function App() {
   const onDeleteResult = async (id) => {
     await deleteDoc(doc(db, "results", id));
   };
+  // Doc ids are deterministic (studentId + template slot, see eligibilityDocId), so a re-upload
+  // overwrites the same student's status for that template instead of duplicating it. Batched in
+  // chunks under Firestore's 500-writes-per-batch cap, since eligibility lists run to hundreds.
+  const onImportEligibility = async (records) => {
+    for (let i = 0; i < records.length; i += 450) {
+      const batch = writeBatch(db);
+      records.slice(i, i + 450).forEach(r => batch.set(doc(db, "interviewEligibility", r.id), r.data, { merge: true }));
+      await batch.commit();
+    }
+  };
+  const onDeleteEligibility = async (id) => {
+    await deleteDoc(doc(db, "interviewEligibility", id));
+  };
   const onSendToInterview = async (students) => {
     const idToken = await auth.currentUser.getIdToken();
     const res = await fetch("/api/send-to-interview", {
@@ -7838,8 +8070,8 @@ export default function App() {
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
-          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} role={role} />}
-          {page === "interviews" && <InterviewsPage role={role} />}
+          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} role={role} />}
+          {page === "interviews" && <InterviewsPage role={role} eligibility={eligibility} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
         </div>
