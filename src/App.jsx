@@ -6644,17 +6644,26 @@ const isPartialStatus = (status) => /partial/i.test(status || "");
 // Reuses the same per-slot row builder the table itself renders with, so Cleared/Verdict/Levels
 // can never drift from what someone sees when they click into the slot — no separate copy of any
 // clearance/verdict/level rule lives here.
+// UIDs are compared ignoring case, spaces and invisible characters (non-breaking/zero-width
+// spaces, BOMs) — these sneak in when UIDs are copied through spreadsheets and made identical-
+// looking UIDs fail to match.
+function normUid(v) {
+  return String(v || "").replace(/[\s\u00A0\u200B-\u200D\uFEFF]/g, "").toLowerCase();
+}
+
 function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
   const byStudent = new Map();
   for (const iv of academyInterviews) {
     if (parseAcademySlot(iv.templateName) !== slotKey) continue;
-    const uid = iv.candidateUid || iv.id;
+    // A doc synced without candidateUid can't be matched to any upload; keyed by its own doc id
+    // so it still counts as one student, and flagged in the not-on-list popup.
+    const uid = normUid(iv.candidateUid) || `doc:${iv.id}`;
     const at = toMillis(iv.feedbackSubmittedAt) || toMillis(iv.updatedAt) || toMillis(iv.scheduledDate);
     if (!byStudent.has(uid)) byStudent.set(uid, []);
     byStudent.get(uid).push({ iv, row: ACADEMY_ROW_BUILDERS[slotKey](iv), at });
   }
 
-  const eligibleIds = new Set(eligibility.filter(e => e.templateSlot === slotKey && e.eligible).map(e => e.studentId));
+  const eligibleIds = new Set(eligibility.filter(e => e.templateSlot === slotKey && e.eligible).map(e => normUid(e.studentId)));
   const hasEligibility = eligibleIds.size > 0;
   const funnel = [...byStudent.entries()].filter(([uid]) => !hasEligibility || eligibleIds.has(uid));
 
@@ -6685,21 +6694,25 @@ function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
     pending: hasEligibility ? eligibleIds.size - attempted : null,
     notOnList: hasEligibility ? byStudent.size - funnel.length : 0,
     // Details for the "not on list" popup. possibleMatch = someone on this template's eligibility
-    // list with the same name, which usually means the UID differs between the CSV and the
-    // Interview App rather than the student genuinely not being eligible.
+    // list with the same email or name, which usually means the UID differs between the CSV and
+    // the Interview App rather than the student genuinely not being eligible.
     notOnListStudents: !hasEligibility ? [] : [...byStudent.entries()]
       .filter(([uid]) => !eligibleIds.has(uid))
-      .map(([uid, attempts]) => {
+      .map(([, attempts]) => {
         const last = attempts.reduce((best, a) => (a.at > best.at ? a : best));
         const name = (last.iv.candidateName || "").trim();
-        const normName = name.toLowerCase().replace(/\s+/g, " ");
-        const possibleMatch = normName && eligibility.find(e => e.templateSlot === slotKey && e.eligible
-          && (e.name || "").trim().toLowerCase().replace(/\s+/g, " ") === normName);
+        const email = (last.iv.candidateEmail || "").trim();
+        const norm = (v) => (v || "").trim().toLowerCase().replace(/\s+/g, " ");
+        const onList = eligibility.filter(e => e.templateSlot === slotKey && e.eligible);
+        const byEmail = email && onList.find(e => norm(e.email) === norm(email));
+        const byName = !byEmail && name && onList.find(e => norm(e.name) === norm(name));
+        const possibleMatch = byEmail || byName;
         return {
-          uid, name, email: last.iv.candidateEmail || "",
+          uid: last.iv.candidateUid || "", missingUid: !normUid(last.iv.candidateUid),
+          name, email, matchedBy: byEmail ? "email" : byName ? "name" : "",
           date: last.iv.scheduledDate || "", status: last.row.status || last.iv.status || "",
           attempts: attempts.length,
-          possibleMatch: possibleMatch ? { name: possibleMatch.name, uid: possibleMatch.studentId } : null,
+          possibleMatch: possibleMatch ? { name: possibleMatch.name, uid: possibleMatch.studentId, email: possibleMatch.email } : null,
         };
       }),
     cleared: latestRows.filter(r => r.status === "Cleared").length,
@@ -6879,11 +6892,13 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                 </tr>
               </thead>
               <tbody>
-                {notOnListView.students.map(st => (
-                  <tr key={st.uid}>
+                {notOnListView.students.map((st, i) => (
+                  <tr key={st.uid || i}>
                     <td style={tdStyle}>
                       <div style={{ fontWeight: 700, color: C.text }}>{st.name || "—"}</div>
-                      <div style={{ fontSize: 11, color: C.muted, wordBreak: "break-all" }}>{st.uid}</div>
+                      {st.missingUid
+                        ? <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>No UID from the Interview App — can't be matched</div>
+                        : <div style={{ fontSize: 11, color: C.muted, wordBreak: "break-all" }}>UID: {st.uid}</div>}
                       {st.email && <div style={{ fontSize: 11, color: C.muted }}>{st.email}</div>}
                     </td>
                     <td style={tdStyle}>
@@ -6893,10 +6908,11 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                     <td style={tdStyle}>
                       {st.possibleMatch ? (
                         <>
-                          <div style={{ fontWeight: 700, color: C.text }}>{st.possibleMatch.name}</div>
+                          <div style={{ fontWeight: 700, color: C.text }}>{st.possibleMatch.name || "—"}</div>
                           <div style={{ fontSize: 11, color: C.red, wordBreak: "break-all" }}>UID on list: {st.possibleMatch.uid}</div>
+                          <div style={{ fontSize: 11, color: C.muted }}>matched by {st.matchedBy}</div>
                         </>
-                      ) : <span style={{ color: C.muted }}>No one with this name</span>}
+                      ) : <span style={{ color: C.muted }}>No one with this email or name</span>}
                     </td>
                   </tr>
                 ))}
