@@ -6374,12 +6374,21 @@ function toMillis(v) {
   return isNaN(t) ? 0 : t;
 }
 
+// The Interview App's exact "partially completed" status string hasn't been seen on a synced doc
+// yet, so any status mentioning "partial" counts — tighten this once the real value is known.
+const isPartialStatus = (status) => /partial/i.test(status || "");
+
 // Funnel per interview template, counted in unique students (candidateUid), not attempts: a
-// student with retries counts once, judged by their latest Cleared/Not Cleared attempt.
-// When eligibility has been uploaded for the template (Results → Interview Eligibility), the
-// funnel is restricted to eligible students and anyone interviewed without being on the list is
-// counted separately as notOnList; with no upload, everyone interviewed is counted and
-// eligible is null.
+// student with retries counts once.
+// - Attempted: has at least one completed or partially completed interview (no-show/cancelled
+//   don't count). Clearance/Verdict/Levels use their latest Cleared/Not Cleared attempt.
+// - Partially Completed: attempted, but only ever partially (no fully completed interview).
+// - No-Show / Cancelled: never attempted, and their latest interview has that status.
+// - Pending: eligible minus attempted (so it includes no-shows, cancellations and not-yet-scheduled).
+// When eligibility has been uploaded for the template (Results → Interview Eligibility), counts are
+// restricted to eligible students and anyone interviewed without being on the list is counted
+// separately as notOnList; with no upload, everyone interviewed is counted and eligible/pending
+// are null.
 // Reuses the same per-slot row builder the table itself renders with, so Cleared/Verdict/Levels
 // can never drift from what someone sees when they click into the slot — no separate copy of any
 // clearance/verdict/level rule lives here.
@@ -6397,21 +6406,31 @@ function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
   const hasEligibility = eligibleIds.size > 0;
   const funnel = [...byStudent.entries()].filter(([uid]) => !hasEligibility || eligibleIds.has(uid));
 
-  let attempted = 0;
+  const latest = (list) => list.reduce((best, a) => (a.at > best.at ? a : best));
+  let attempted = 0, partial = 0, noShow = 0, cancelled = 0;
   const latestRows = [];
   for (const [, attempts] of funnel) {
-    const completed = attempts.filter(a => a.iv.status === "completed");
-    if (completed.length === 0) continue;
+    const full = attempts.filter(a => a.iv.status === "completed");
+    const tried = attempts.filter(a => a.iv.status === "completed" || isPartialStatus(a.iv.status));
+    if (tried.length === 0) {
+      const last = latest(attempts).iv.status;
+      if (last === "no_show") noShow++;
+      else if (last === "cancelled") cancelled++;
+      continue;
+    }
     attempted++;
-    const decided = completed.filter(a => a.row.status === "Cleared" || a.row.status === "Not Cleared");
-    const pool = decided.length > 0 ? decided : completed;
-    latestRows.push(pool.reduce((best, a) => (a.at > best.at ? a : best)).row);
+    if (full.length === 0) partial++;
+    const decided = tried.filter(a => a.row.status === "Cleared" || a.row.status === "Not Cleared");
+    latestRows.push(latest(decided.length > 0 ? decided : tried).row);
   }
 
   return {
     eligible: hasEligibility ? eligibleIds.size : null,
-    scheduled: funnel.length,
     attempted,
+    partial,
+    noShow,
+    cancelled,
+    pending: hasEligibility ? eligibleIds.size - attempted : null,
     notOnList: hasEligibility ? byStudent.size - funnel.length : 0,
     cleared: latestRows.filter(r => r.status === "Cleared").length,
     notCleared: latestRows.filter(r => r.status === "Not Cleared").length,
@@ -6504,18 +6523,20 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
               <tr style={{ background: C.surfaceAlt }}>
                 <th style={thStyle}>Interview Template</th>
                 <th style={thStyle}>Eligible</th>
-                <th style={thStyle}>Scheduled</th>
                 <th style={thStyle}>Attempted</th>
                 <th style={thStyle}>Clearance</th>
                 <th style={thStyle}>Verdict Band</th>
                 <th style={thStyle}>Levels</th>
+                <th style={thStyle}>Cancelled</th>
+                <th style={thStyle}>No-Show</th>
+                <th style={thStyle}>Partially Completed</th>
+                <th style={thStyle}>Pending</th>
               </tr>
             </thead>
             <tbody>
               {INTERVIEW_STATS_SLOTS.map(slot => {
                 const stats = computeSlotStats(academyInterviews, slot.slotKey, eligibility || []);
-                const base = stats.eligible ?? stats.scheduled;
-                const baseLabel = stats.eligible !== null ? "eligible" : "scheduled";
+                const plain = (n) => <strong style={{ fontSize: 13, color: C.text }}>{n}</strong>;
                 const verdictSegments = VERDICT_BAND_ORDER
                   .filter(b => stats.verdictCounts[b])
                   .map(b => ({ label: b, value: stats.verdictCounts[b], color: VERDICT_BAND_HEX[b] }));
@@ -6540,8 +6561,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                         </div>
                       )}
                     </td>
-                    <td style={tdStyle}><FunnelCount value={stats.scheduled} of={stats.eligible} ofLabel="eligible" /></td>
-                    <td style={tdStyle}><FunnelCount value={stats.attempted} of={base} ofLabel={baseLabel} /></td>
+                    <td style={tdStyle}><FunnelCount value={stats.attempted} of={stats.eligible} ofLabel="eligible" /></td>
                     <td style={tdStyle}>
                       <StackedBar segments={[
                         { label: "Cleared", value: stats.cleared, color: C.green },
@@ -6550,6 +6570,14 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                     </td>
                     <td style={tdStyle}>{verdictSegments.length === 0 ? <span style={{ color: C.muted }}>—</span> : <StackedBar segments={verdictSegments} />}</td>
                     <td style={tdStyle}>{levelSegments.length === 0 ? <span style={{ color: C.muted }}>—</span> : <StackedBar segments={levelSegments} />}</td>
+                    <td style={tdStyle}>{plain(stats.cancelled)}</td>
+                    <td style={tdStyle}>{plain(stats.noShow)}</td>
+                    <td style={tdStyle}>{plain(stats.partial)}</td>
+                    <td style={tdStyle}>
+                      {stats.pending === null
+                        ? <span style={{ color: C.muted }} title="Needs an eligibility upload for this template">—</span>
+                        : <FunnelCount value={stats.pending} of={stats.eligible} ofLabel="eligible" />}
+                    </td>
                   </tr>
                 );
               })}
@@ -6557,7 +6585,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
           </table>
         </div>
         <div style={{ fontSize: 10.5, color: C.muted, padding: "8px 14px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
-          All counts are unique students (matched by Student UID). Scheduled = has at least one interview for the template; Attempted = completed at least one. Clearance, Verdict Band and Levels use each student's latest decided attempt. Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted.
+          All counts are unique students (matched by Student UID). Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted. Attempted = completed or partially completed at least one interview (no-show/cancelled don't count); Clearance, Verdict Band and Levels use each student's latest decided attempt. Cancelled / No-Show = never attempted, latest interview has that status. Partially Completed = attempted, but never fully completed. Pending = Eligible − Attempted.
         </div>
       </div>
     </div>
