@@ -3798,8 +3798,70 @@ function parseEligibility(raw) {
 function eligibilityDocId(studentId, slotKey) {
   return `${studentId}__${slotKey}`.replace(/[/:]/g, "_");
 }
+// The template's dummy rows use this UID prefix, so the preview can catch a template uploaded
+// without replacing them.
+const ELIGIBILITY_SAMPLE_PREFIX = "SAMPLE-";
 
-function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, onImportEligibility, onDeleteEligibility, role }) {
+// Downloads a CSV with a UTF-8 BOM, so Excel shows the "—" in template names like
+// "Bucket B — TR1" correctly instead of garbling it.
+function downloadRowsCsv(fileName, rows) {
+  const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
+  a.download = fileName;
+  a.click();
+}
+function fileSlug(v) {
+  return (v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+// Template for one interview template (its exact name pre-filled in every dummy row), or — when
+// none is picked — one dummy row per template so every accepted name is visible.
+function downloadEligibilityTemplate(slotKey) {
+  const slots = slotKey ? INTERVIEW_STATS_SLOTS.filter(sl => sl.slotKey === slotKey) : INTERVIEW_STATS_SLOTS;
+  const rows = slotKey
+    ? [
+        [`${ELIGIBILITY_SAMPLE_PREFIX}UID-001`, "Sample Student One", "sample.one@example.com", slots[0].label, "Eligible"],
+        [`${ELIGIBILITY_SAMPLE_PREFIX}UID-002`, "Sample Student Two", "sample.two@example.com", slots[0].label, "Eligible"],
+        [`${ELIGIBILITY_SAMPLE_PREFIX}UID-003`, "Sample Student Three", "sample.three@example.com", slots[0].label, "Not Eligible"],
+      ]
+    : slots.map((sl, i) => [`${ELIGIBILITY_SAMPLE_PREFIX}UID-${String(i + 1).padStart(3, "0")}`, `Sample Student ${i + 1}`, `sample${i + 1}@example.com`, sl.label, i % 3 === 2 ? "Not Eligible" : "Eligible"]);
+  downloadRowsCsv(`interview-eligibility-template-${slotKey ? fileSlug(slotLabel(slotKey)) : "all-templates"}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
+}
+
+// Validates every row without writing anything, so the POC sees exactly what will be uploaded
+// (and what's wrong) before confirming. Rows with an error are never uploaded.
+function parseEligibilityPreview(text, existingIds) {
+  const { rows } = parseCSV(text.replace(/^\uFEFF/, ""));
+  const seen = new Map();
+  return rows.map((row, i) => {
+    const line = i + 2; // +1 for the header row, +1 for 1-based spreadsheet row numbers
+    const studentId = getCol(row, "studentId");
+    const rawTemplate = getCol(row, "interviewTemplate");
+    const rawStatus = getCol(row, "eligibilityStatus");
+    const templateSlot = templateSlotFromCsv(rawTemplate);
+    const eligible = parseEligibility(rawStatus);
+    const errors = [];
+    if (!studentId) errors.push("Student UID is missing");
+    else if (studentId.toUpperCase().startsWith(ELIGIBILITY_SAMPLE_PREFIX)) errors.push("Sample row from the template — replace it with a real student");
+    if (!rawTemplate) errors.push("Interview Template is missing");
+    else if (!templateSlot) errors.push(`Unknown Interview Template "${rawTemplate}"`);
+    if (!rawStatus) errors.push("Eligibility Status is missing");
+    else if (eligible === null) errors.push(`Eligibility Status "${rawStatus}" — use Eligible or Not Eligible`);
+    const id = studentId && templateSlot ? eligibilityDocId(studentId, templateSlot) : null;
+    if (id && errors.length === 0) {
+      if (seen.has(id)) errors.push(`Duplicate of row ${seen.get(id)} (same student + template)`);
+      else seen.set(id, line);
+    }
+    return {
+      line, id, studentId, name: getCol(row, "name"), email: getCol(row, "email"),
+      rawTemplate, templateSlot, rawStatus, eligible, errors,
+      action: errors.length ? "error" : existingIds.has(id) ? "update" : "new",
+    };
+  });
+}
+
+function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, role }) {
   const [programTab, setProgramTab] = useState("online");
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PAGE_SIZE = 10;
@@ -3810,6 +3872,10 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   const [sendError, setSendError] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [eligTemplateFilter, setEligTemplateFilter] = useState("");
+  const [eligView, setEligView] = useState("students"); // "students" | "uploads"
+  const [eligTemplatePick, setEligTemplatePick] = useState("");
+  const [eligPreview, setEligPreview] = useState(null); // { fileName, rows } from parseEligibilityPreview
+  const [eligPreviewErrorsOnly, setEligPreviewErrorsOnly] = useState(false);
   const fileInputRef = useRef(null);
 
   const PROGRAMS = [{ id: "online", label: "Online" }, { id: "offline", label: "Offline" }, { id: "eligibility", label: "Interview Eligibility" }];
@@ -3825,7 +3891,8 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || ""));
 
   const downloadTemplate = () => {
-    const headers = isEligTab ? ELIGIBILITY_CSV_HEADERS : programTab === "online" ? ONLINE_CSV_HEADERS : OFFLINE_CSV_HEADERS;
+    if (isEligTab) return downloadEligibilityTemplate(eligTemplateFilter);
+    const headers = programTab === "online" ? ONLINE_CSV_HEADERS : OFFLINE_CSV_HEADERS;
     const csv = [headers].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
@@ -3833,37 +3900,43 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     a.click();
   };
 
-  const importEligibilityCSV = async (file) => {
-    setImportStatus("importing");
+  const previewEligibilityCSV = async (file) => {
     try {
-      const { rows } = parseCSV(await file.text());
-      const byId = new Map();
-      const unknownTemplates = new Set();
-      let errors = 0;
-      const importedAt = new Date().toISOString();
-      for (const row of rows) {
-        const studentId = getCol(row, "studentId");
-        const rawTemplate = getCol(row, "interviewTemplate");
-        const eligible = parseEligibility(getCol(row, "eligibilityStatus"));
-        const templateSlot = templateSlotFromCsv(rawTemplate);
-        if (!templateSlot && rawTemplate) unknownTemplates.add(rawTemplate);
-        if (!studentId || !templateSlot || eligible === null) { errors++; continue; }
-        const id = eligibilityDocId(studentId, templateSlot);
-        byId.set(id, { id, data: { studentId, name: getCol(row, "name"), email: getCol(row, "email"), templateSlot, eligible, importedAt } });
-      }
-      const existingIds = new Set((eligibility || []).map(e => e.id));
-      const records = [...byId.values()];
-      await onImportEligibility(records);
-      const updated = records.filter(r => existingIds.has(r.id)).length;
-      setImportStatus({ added: records.length - updated, updated, errors, unknownTemplates: [...unknownTemplates] });
+      const rows = parseEligibilityPreview(await file.text(), new Set((eligibility || []).map(e => e.id)));
+      setEligPreview({ fileName: file.name, rows });
+      setEligPreviewErrorsOnly(false);
+      setImportStatus("preview");
     } catch (err) {
-      console.error("eligibility import failed:", err);
-      setImportStatus({ added: 0, updated: 0, errors: 1, failed: err.message || "Import failed" });
+      console.error("eligibility parse failed:", err);
+      setImportStatus({ added: 0, updated: 0, errors: 1, failed: `Couldn't read this file: ${err.message || err}` });
     }
   };
 
+  const confirmEligibilityUpload = async () => {
+    const valid = eligPreview.rows.filter(r => r.action !== "error");
+    const errors = eligPreview.rows.length - valid.length;
+    setImportStatus("importing");
+    try {
+      await onImportEligibility(
+        valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name, email: r.email, templateSlot: r.templateSlot, eligible: r.eligible } })),
+        { fileName: eligPreview.fileName },
+      );
+      const updated = valid.filter(r => r.action === "update").length;
+      setImportStatus({ added: valid.length - updated, updated, errors });
+      setEligPreview(null);
+    } catch (err) {
+      console.error("eligibility import failed:", err);
+      setImportStatus({ added: 0, updated: 0, errors: 1, failed: err.message || "Upload failed" });
+    }
+  };
+
+  const exportEligibilityUpload = (u) => {
+    const rows = (u.rows || []).map(r => [r.studentId, r.name, r.email, slotLabel(r.templateSlot), r.eligible ? "Eligible" : "Not Eligible"]);
+    downloadRowsCsv(`interview-eligibility-upload-${(u.uploadedAt || "").slice(0, 10)}-${fileSlug(u.fileName || u.id)}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
+  };
+
   const importCSV = async (file) => {
-    if (isEligTab) return importEligibilityCSV(file);
+    if (isEligTab) return previewEligibilityCSV(file);
     setImportStatus("importing");
     try {
       const text = await file.text();
@@ -3960,7 +4033,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Template
               </button>
-              <button onClick={() => { setImportStatus(null); setShowImportModal(true); }} title="Import CSV" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <button onClick={() => { setImportStatus(null); setEligPreview(null); setEligTemplatePick(eligTemplateFilter); setShowImportModal(true); }} title="Import CSV" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 10V2M5 5l3-3 3 3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Import CSV
               </button>
@@ -3984,7 +4057,59 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         const totalPages = Math.max(1, Math.ceil(tabResults.length / RESULTS_PAGE_SIZE));
         const pageRows = tabResults.slice((resultsPage - 1) * RESULTS_PAGE_SIZE, resultsPage * RESULTS_PAGE_SIZE);
         const shownEligible = tabResults.filter(e => e.eligible).length;
+        const uploads = [...(eligibilityUploads || [])].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
+        const viewToggle = (
+          <div style={{ display: "inline-flex", border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden", marginBottom: 14 }}>
+            {[{ id: "students", label: "Students" }, { id: "uploads", label: `Upload History (${uploads.length})` }].map(v => (
+              <button key={v.id} onClick={() => setEligView(v.id)} style={{ background: eligView === v.id ? C.accent : C.surface, color: eligView === v.id ? "#fff" : C.text, border: "none", padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{v.label}</button>
+            ))}
+          </div>
+        );
+        if (eligView === "uploads") {
+          return (<>
+            {viewToggle}
+            {uploads.length === 0 ? (
+              <EmptyState icon="🗂️" title="No uploads yet" sub="Every eligibility CSV you upload is listed here with its date, and can be downloaded again." />
+            ) : (
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: C.surfaceAlt }}>
+                      <th style={thBase}>Uploaded On</th>
+                      <th style={thBase}>File</th>
+                      <th style={thBase}>Uploaded By</th>
+                      <th style={thBase}>Interview Templates</th>
+                      <th style={thBase}>Rows</th>
+                      <th style={{ ...thBase, width: "1px" }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {uploads.map((u, i) => {
+                      const cell = { verticalAlign: "middle", background: i % 2 === 0 ? "#fff" : C.surfaceAlt, border: `1px solid ${C.border}`, padding: "8px 12px" };
+                      return (
+                        <tr key={u.id}>
+                          <td style={{ ...cell, whiteSpace: "nowrap" }}>{u.uploadedAt ? new Date(u.uploadedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                          <td style={cell}>{u.fileName || "—"}</td>
+                          <td style={cell}>{u.uploadedBy || "—"}</td>
+                          <td style={cell}>{(u.templateSlots || []).map(slotLabel).join(", ") || "—"}</td>
+                          <td style={{ ...cell, whiteSpace: "nowrap" }}>
+                            <strong style={{ color: C.text }}>{u.rowCount ?? 0}</strong>
+                            <div style={{ fontSize: 11, color: C.muted }}>{u.eligibleCount ?? 0} eligible · {(u.rowCount ?? 0) - (u.eligibleCount ?? 0)} not</div>
+                          </td>
+                          <td style={cell}>
+                            <Btn variant="secondary" size="sm" onClick={() => exportEligibilityUpload(u)}>Download CSV</Btn>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>);
+        }
         return (<>
+          {viewToggle}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
             <select value={eligTemplateFilter} onChange={e => setEligTemplateFilter(e.target.value)} style={{ ...inputS, width: 280 }}>
               <option value="">All interview templates</option>
@@ -4144,14 +4269,21 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
       })()}
 
       {showImportModal && (
-        <Modal title={isEligTab ? "Import Interview Eligibility from CSV" : "Import Results from CSV"} onClose={() => { setShowImportModal(false); setImportStatus(null); }}>
+        <Modal title={isEligTab ? "Import Interview Eligibility from CSV" : "Import Results from CSV"} width={isEligTab ? 820 : undefined} onClose={() => { setShowImportModal(false); setImportStatus(null); setEligPreview(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {isEligTab ? (
             <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
               <div style={{ fontWeight: 700, color: C.text, marginBottom: 4 }}>How it works</div>
-              1. Click <strong>Template</strong> to download the CSV headers: {ELIGIBILITY_CSV_HEADERS.join(", ")}.<br />
-              2. One row per student per interview template. <strong>Interview Template</strong> must be one of: {INTERVIEW_STATS_SLOTS.map(sl => sl.label).join(", ")} (the Interview App's own template name also works). <strong>Eligibility Status</strong> is Eligible / Not Eligible (Yes / No also work).<br />
-              3. Upload the CSV here. If a student + template pair is already uploaded, its status is updated; otherwise a new row is created.<br />
+              1. Pick the interview and download its template. It has sample rows with the exact <strong>Interview Template</strong> name already filled in — replace the sample students with real ones (sample rows are rejected on upload).<br />
+              <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "6px 0 8px", flexWrap: "wrap" }}>
+                <select value={eligTemplatePick} onChange={e => setEligTemplatePick(e.target.value)} style={{ ...inputS, width: 260 }}>
+                  <option value="">All interview templates</option>
+                  {INTERVIEW_STATS_SLOTS.map(sl => <option key={sl.slotKey} value={sl.slotKey}>{sl.label}</option>)}
+                </select>
+                <Btn variant="secondary" size="sm" onClick={() => downloadEligibilityTemplate(eligTemplatePick)}>Download Template</Btn>
+              </div>
+              2. One row per student per interview template. <strong>Eligibility Status</strong> is Eligible or Not Eligible.<br />
+              3. Choose the file — you'll see a preview with any errors before anything is uploaded. Rows with errors are skipped; a student + template pair that's already uploaded gets its status updated.<br />
               Students are matched to interviews by <strong>Student UID</strong>, so it must be the same UID the Interview Coordinator App has.
             </div>
             ) : (
@@ -4183,10 +4315,78 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               </>
             )}
 
+            {importStatus === "preview" && eligPreview && (() => {
+              const errorRows = eligPreview.rows.filter(r => r.action === "error");
+              const validRows = eligPreview.rows.filter(r => r.action !== "error");
+              const shown = eligPreviewErrorsOnly ? errorRows : eligPreview.rows;
+              const pth = { ...thBase, position: "sticky", top: 0, zIndex: 1, background: C.surfaceAlt };
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12, color: C.muted }}>
+                    <div>
+                      <strong style={{ color: C.text }}>{eligPreview.fileName}</strong> · {eligPreview.rows.length} rows ·{" "}
+                      <span style={{ color: C.green, fontWeight: 700 }}>{validRows.filter(r => r.action === "new").length} new</span> ·{" "}
+                      <span style={{ color: C.blue, fontWeight: 700 }}>{validRows.filter(r => r.action === "update").length} update</span> ·{" "}
+                      <span style={{ color: errorRows.length ? C.red : C.muted, fontWeight: 700 }}>{errorRows.length} with errors</span>
+                    </div>
+                    {errorRows.length > 0 && (
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                        <input type="checkbox" checked={eligPreviewErrorsOnly} onChange={e => setEligPreviewErrorsOnly(e.target.checked)} /> Show errors only
+                      </label>
+                    )}
+                  </div>
+                  {eligPreview.rows.length === 0 ? (
+                    <div style={{ fontSize: 12, color: C.red }}>No rows found in this file — check it has the template's header row and at least one student.</div>
+                  ) : (
+                    <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, overflow: "auto", maxHeight: 340 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead>
+                          <tr>
+                            <th style={pth}>Row</th>
+                            <th style={pth}>Student</th>
+                            <th style={pth}>Interview Template</th>
+                            <th style={pth}>Eligibility</th>
+                            <th style={pth}>Check</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {shown.map(r => {
+                            const cell = { verticalAlign: "top", background: r.action === "error" ? C.redLight : "#fff", border: `1px solid ${C.border}`, padding: "6px 10px" };
+                            return (
+                              <tr key={r.line}>
+                                <td style={{ ...cell, color: C.muted }}>{r.line}</td>
+                                <td style={cell}>
+                                  <div style={{ fontWeight: 700, color: C.text }}>{r.name || "—"}</div>
+                                  <div style={{ fontSize: 11, color: C.muted }}>{r.studentId || "—"}</div>
+                                </td>
+                                <td style={cell}>{r.templateSlot ? slotLabel(r.templateSlot) : (r.rawTemplate || "—")}</td>
+                                <td style={cell}>{r.eligible === true ? <Badge color="green">Eligible</Badge> : r.eligible === false ? <Badge color="gray">Not Eligible</Badge> : (r.rawStatus || "—")}</td>
+                                <td style={cell}>
+                                  {r.action === "error"
+                                    ? <div style={{ color: C.red, lineHeight: 1.5 }}>{r.errors.map(e => <div key={e}>{e}</div>)}</div>
+                                    : r.action === "update" ? <Badge color="blue">Update</Badge> : <Badge color="green">New</Badge>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                    <Btn variant="secondary" onClick={() => { setEligPreview(null); setImportStatus(null); }}>Choose Another File</Btn>
+                    <Btn onClick={confirmEligibilityUpload} disabled={validRows.length === 0}>
+                      Upload {validRows.length} valid row{validRows.length === 1 ? "" : "s"}{errorRows.length > 0 ? ` (skip ${errorRows.length})` : ""}
+                    </Btn>
+                  </div>
+                </div>
+              );
+            })()}
+
             {importStatus === "importing" && (
               <div style={{ textAlign: "center", padding: "28px 0", color: C.muted, fontSize: 13 }}>
                 <div style={{ marginBottom: 8, fontWeight: 600, color: C.text }}>Importing…</div>
-                Writing results to database, please wait.
+                {isEligTab ? "Uploading eligibility, please wait." : "Writing results to database, please wait."}
               </div>
             )}
 
@@ -4197,14 +4397,9 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                   <div style={{ color: C.muted, lineHeight: 1.8 }}>
                     <span style={{ color: C.green, fontWeight: 700 }}>{importStatus.added}</span> {isEligTab ? "rows" : "results"} created &nbsp;·&nbsp;
                     <span style={{ color: C.blue, fontWeight: 700 }}>{importStatus.updated}</span> {isEligTab ? "rows" : "results"} updated
-                    {importStatus.errors > 0 && <> &nbsp;·&nbsp; <span style={{ color: C.red, fontWeight: 700 }}>{importStatus.errors}</span> rows skipped ({isEligTab ? "missing Student UID, unknown Interview Template, or unrecognised Eligibility Status" : "missing Student ID or Exam"})</>}
+                    {importStatus.errors > 0 && <> &nbsp;·&nbsp; <span style={{ color: C.red, fontWeight: 700 }}>{importStatus.errors}</span> rows skipped ({isEligTab ? "had errors in the preview" : "missing Student ID or Exam"})</>}
                   </div>
                   {importStatus.failed && <div style={{ color: C.red, marginTop: 6 }}>{importStatus.failed}</div>}
-                  {importStatus.unknownTemplates?.length > 0 && (
-                    <div style={{ color: C.muted, marginTop: 6, fontSize: 12 }}>
-                      Unrecognised Interview Template values: <strong style={{ color: C.text }}>{importStatus.unknownTemplates.join(", ")}</strong>
-                    </div>
-                  )}
                 </div>
                 <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                   <Btn variant="secondary" onClick={() => setImportStatus(null)}>Import Another</Btn>
@@ -7668,6 +7863,7 @@ export default function App() {
   const [publishedAssessments, setPublishedAssessments] = useState([]);
   const [results, setResults] = useState([]);
   const [eligibility, setEligibility] = useState([]);
+  const [eligibilityUploads, setEligibilityUploads] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [rolesList, setRolesList] = useState([]);
   const [livePerms, setLivePerms] = useState(PERMISSIONS);
@@ -7737,6 +7933,9 @@ export default function App() {
       ),
       onSnapshot(collection(db, "interviewEligibility"), snap =>
         setEligibility(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      ),
+      onSnapshot(collection(db, "eligibilityUploads"), snap =>
+        setEligibilityUploads(snap.docs.map(d => ({ id: d.id, ...d.data() })))
       ),
       onSnapshot(collection(db, "driveExpenses"), snap =>
         setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -7924,10 +8123,21 @@ export default function App() {
   // Doc ids are deterministic (studentId + template slot, see eligibilityDocId), so a re-upload
   // overwrites the same student's status for that template instead of duplicating it. Batched in
   // chunks under Firestore's 500-writes-per-batch cap, since eligibility lists run to hundreds.
-  const onImportEligibility = async (records) => {
+  // Each upload also gets its own eligibilityUploads doc holding a snapshot of exactly the rows it
+  // wrote, so any past upload can be re-downloaded as-is even after later uploads overwrite the
+  // live per-student docs.
+  const onImportEligibility = async (records, { fileName }) => {
+    const uploadedAt = new Date().toISOString();
+    const uploadRef = await addDoc(collection(db, "eligibilityUploads"), {
+      fileName, uploadedAt, uploadedBy: currentUser?.email || "",
+      rowCount: records.length,
+      eligibleCount: records.filter(r => r.data.eligible).length,
+      templateSlots: [...new Set(records.map(r => r.data.templateSlot))],
+      rows: records.map(r => ({ studentId: r.data.studentId, name: r.data.name, email: r.data.email, templateSlot: r.data.templateSlot, eligible: r.data.eligible })),
+    });
     for (let i = 0; i < records.length; i += 450) {
       const batch = writeBatch(db);
-      records.slice(i, i + 450).forEach(r => batch.set(doc(db, "interviewEligibility", r.id), r.data, { merge: true }));
+      records.slice(i, i + 450).forEach(r => batch.set(doc(db, "interviewEligibility", r.id), { ...r.data, importedAt: uploadedAt, uploadId: uploadRef.id }, { merge: true }));
       await batch.commit();
     }
   };
@@ -8098,7 +8308,7 @@ export default function App() {
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
-          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} role={role} />}
+          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} role={role} />}
           {page === "interviews" && <InterviewsPage role={role} eligibility={eligibility} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
