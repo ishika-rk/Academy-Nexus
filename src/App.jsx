@@ -3744,7 +3744,6 @@ const RESULTS_HEADER_MAP = {
   status:    ["status"],
   bucket:    ["bucket"],
   interviewTemplate: ["interview template", "template", "interview"],
-  eligibilityStatus: ["eligibility status", "eligibility", "eligible", "eligible for interview"],
 };
 function getCol(row, field) {
   const names = RESULTS_HEADER_MAP[field];
@@ -3771,7 +3770,10 @@ function clearanceBadge(status) {
 // can show a real funnel (eligible -> scheduled -> attempted -> cleared) instead of only counting
 // whoever happened to get interviewed. One doc per student per template in interviewEligibility.
 
-const ELIGIBILITY_CSV_HEADERS = ["Student UID", "Student Name", "Email ID", "Interview Template", "Eligibility Status"];
+// Only eligible students are uploaded — being in the file is what makes a student eligible, so
+// there's no status column. (Docs still store eligible: true; older docs may hold eligible: false
+// from before the column was dropped, and are ignored everywhere.)
+const ELIGIBILITY_CSV_HEADERS = ["Student UID", "Student Name", "Email ID", "Interview Template"];
 
 // Accepts either the name shown on the Interviews page ("Bucket B — TR1", "IRP L1") or the Interview
 // App's own templateName ("Academy Bucket B TR1", "IRP L1 Human Interview"), so a POC can use
@@ -3787,13 +3789,6 @@ function templateSlotFromCsv(raw) {
 }
 function slotLabel(slotKey) {
   return INTERVIEW_STATS_SLOTS.find(sl => sl.slotKey === slotKey)?.label || slotKey;
-}
-// null = unrecognised value (row gets skipped rather than guessed at).
-function parseEligibility(raw) {
-  const l = (raw || "").trim().toLowerCase();
-  if (["eligible", "yes", "y", "true", "1"].includes(l)) return true;
-  if (["not eligible", "ineligible", "no", "n", "false", "0"].includes(l)) return false;
-  return null;
 }
 function eligibilityDocId(studentId, slotKey) {
   return `${studentId}__${slotKey}`.replace(/[/:]/g, "_");
@@ -3815,18 +3810,13 @@ function fileSlug(v) {
   return (v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-// Template for one interview template (its exact name pre-filled in every dummy row), or — when
-// none is picked — one dummy row per template so every accepted name is visible.
+// One example row with the chosen interview's exact template name pre-filled. With no interview
+// picked, it uses the first template just as an example. The UID keeps the SAMPLE- prefix so the
+// preview rejects the row if it's uploaded without being replaced.
 function downloadEligibilityTemplate(slotKey) {
-  const slots = slotKey ? INTERVIEW_STATS_SLOTS.filter(sl => sl.slotKey === slotKey) : INTERVIEW_STATS_SLOTS;
-  const rows = slotKey
-    ? [
-        [`${ELIGIBILITY_SAMPLE_PREFIX}UID-001`, "Sample Student One", "sample.one@example.com", slots[0].label, "Eligible"],
-        [`${ELIGIBILITY_SAMPLE_PREFIX}UID-002`, "Sample Student Two", "sample.two@example.com", slots[0].label, "Eligible"],
-        [`${ELIGIBILITY_SAMPLE_PREFIX}UID-003`, "Sample Student Three", "sample.three@example.com", slots[0].label, "Not Eligible"],
-      ]
-    : slots.map((sl, i) => [`${ELIGIBILITY_SAMPLE_PREFIX}UID-${String(i + 1).padStart(3, "0")}`, `Sample Student ${i + 1}`, `sample${i + 1}@example.com`, sl.label, i % 3 === 2 ? "Not Eligible" : "Eligible"]);
-  downloadRowsCsv(`interview-eligibility-template-${slotKey ? fileSlug(slotLabel(slotKey)) : "all-templates"}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
+  const label = slotLabel(slotKey || INTERVIEW_STATS_SLOTS[0].slotKey);
+  const row = [`${ELIGIBILITY_SAMPLE_PREFIX}UID-001`, "Priya Sharma", "priya.sharma@example.com", label];
+  downloadRowsCsv(`interview-eligibility-template-${slotKey ? fileSlug(label) : "example"}.csv`, [ELIGIBILITY_CSV_HEADERS, row]);
 }
 
 // Validates every row without writing anything, so the POC sees exactly what will be uploaded
@@ -3838,16 +3828,12 @@ function parseEligibilityPreview(text, existingIds) {
     const line = i + 2; // +1 for the header row, +1 for 1-based spreadsheet row numbers
     const studentId = getCol(row, "studentId");
     const rawTemplate = getCol(row, "interviewTemplate");
-    const rawStatus = getCol(row, "eligibilityStatus");
     const templateSlot = templateSlotFromCsv(rawTemplate);
-    const eligible = parseEligibility(rawStatus);
     const errors = [];
     if (!studentId) errors.push("Student UID is missing");
     else if (studentId.toUpperCase().startsWith(ELIGIBILITY_SAMPLE_PREFIX)) errors.push("Sample row from the template — replace it with a real student");
     if (!rawTemplate) errors.push("Interview Template is missing");
     else if (!templateSlot) errors.push(`Unknown Interview Template "${rawTemplate}"`);
-    if (!rawStatus) errors.push("Eligibility Status is missing");
-    else if (eligible === null) errors.push(`Eligibility Status "${rawStatus}" — use Eligible or Not Eligible`);
     const id = studentId && templateSlot ? eligibilityDocId(studentId, templateSlot) : null;
     if (id && errors.length === 0) {
       if (seen.has(id)) errors.push(`Duplicate of row ${seen.get(id)} (same student + template)`);
@@ -3855,7 +3841,7 @@ function parseEligibilityPreview(text, existingIds) {
     }
     return {
       line, id, studentId, name: getCol(row, "name"), email: getCol(row, "email"),
-      rawTemplate, templateSlot, rawStatus, eligible, errors,
+      rawTemplate, templateSlot, errors,
       action: errors.length ? "error" : existingIds.has(id) ? "update" : "new",
     };
   });
@@ -3884,7 +3870,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
 
   const tabResults = isEligTab
     ? (eligibility || [])
-        .filter(e => !eligTemplateFilter || e.templateSlot === eligTemplateFilter)
+        .filter(e => e.eligible !== false && (!eligTemplateFilter || e.templateSlot === eligTemplateFilter))
         .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || "") || (a.name || "").localeCompare(b.name || ""))
     : (results || [])
         .filter(r => (r.program || "online") === programTab)
@@ -3918,7 +3904,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     setImportStatus("importing");
     try {
       await onImportEligibility(
-        valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name, email: r.email, templateSlot: r.templateSlot, eligible: r.eligible } })),
+        valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name, email: r.email, templateSlot: r.templateSlot, eligible: true } })),
         { fileName: eligPreview.fileName },
       );
       const updated = valid.filter(r => r.action === "update").length;
@@ -3931,7 +3917,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   };
 
   const exportEligibilityUpload = (u) => {
-    const rows = (u.rows || []).map(r => [r.studentId, r.name, r.email, slotLabel(r.templateSlot), r.eligible ? "Eligible" : "Not Eligible"]);
+    const rows = (u.rows || []).map(r => [r.studentId, r.name, r.email, slotLabel(r.templateSlot)]);
     downloadRowsCsv(`interview-eligibility-upload-${(u.uploadedAt || "").slice(0, 10)}-${fileSlug(u.fileName || u.id)}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
   };
 
@@ -4056,7 +4042,6 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         const all = eligibility || [];
         const totalPages = Math.max(1, Math.ceil(tabResults.length / RESULTS_PAGE_SIZE));
         const pageRows = tabResults.slice((resultsPage - 1) * RESULTS_PAGE_SIZE, resultsPage * RESULTS_PAGE_SIZE);
-        const shownEligible = tabResults.filter(e => e.eligible).length;
         const uploads = [...(eligibilityUploads || [])].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
         const viewToggle = (
           <div style={{ display: "inline-flex", border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden", marginBottom: 14 }}>
@@ -4079,7 +4064,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                       <th style={thBase}>File</th>
                       <th style={thBase}>Uploaded By</th>
                       <th style={thBase}>Interview Templates</th>
-                      <th style={thBase}>Rows</th>
+                      <th style={thBase}>Eligible Students</th>
                       <th style={{ ...thBase, width: "1px" }} />
                     </tr>
                   </thead>
@@ -4093,8 +4078,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                           <td style={cell}>{u.uploadedBy || "—"}</td>
                           <td style={cell}>{(u.templateSlots || []).map(slotLabel).join(", ") || "—"}</td>
                           <td style={{ ...cell, whiteSpace: "nowrap" }}>
-                            <strong style={{ color: C.text }}>{u.rowCount ?? 0}</strong>
-                            <div style={{ fontSize: 11, color: C.muted }}>{u.eligibleCount ?? 0} eligible · {(u.rowCount ?? 0) - (u.eligibleCount ?? 0)} not</div>
+                            <strong style={{ color: C.text }}>{u.eligibleCount ?? u.rowCount ?? 0}</strong> students
                           </td>
                           <td style={cell}>
                             <Btn variant="secondary" size="sm" onClick={() => exportEligibilityUpload(u)}>Download CSV</Btn>
@@ -4118,7 +4102,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               ))}
             </select>
             <div style={{ fontSize: 12, color: C.muted }}>
-              <strong style={{ color: C.text }}>{shownEligible}</strong> eligible · <strong style={{ color: C.text }}>{tabResults.length - shownEligible}</strong> not eligible
+              <strong style={{ color: C.text }}>{tabResults.length}</strong> eligible students
             </div>
           </div>
           {tabResults.length === 0 ? (
@@ -4130,7 +4114,6 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                   <tr style={{ background: C.surfaceAlt }}>
                     <th style={thBase}>Student</th>
                     <th style={thBase}>Interview Template</th>
-                    <th style={thBase}>Eligibility</th>
                     <th style={thBase}>Uploaded</th>
                     {can(role, "results.write") && <th style={{ ...thBase, width: "1px" }} />}
                   </tr>
@@ -4145,7 +4128,6 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                           <div style={{ fontSize: 11, color: C.muted }}>{e.studentId}</div>
                         </td>
                         <td style={cell}>{slotLabel(e.templateSlot)}</td>
-                        <td style={cell}>{e.eligible ? <Badge color="green">Eligible</Badge> : <Badge color="gray">Not Eligible</Badge>}</td>
                         <td style={cell}>{e.importedAt ? fmtDate(e.importedAt.slice(0, 10)) : "—"}</td>
                         {can(role, "results.write") && (
                           <td style={cell}>
@@ -4274,7 +4256,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
             {isEligTab ? (
             <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
               <div style={{ fontWeight: 700, color: C.text, marginBottom: 4 }}>How it works</div>
-              1. Pick the interview and download its template. It has sample rows with the exact <strong>Interview Template</strong> name already filled in — replace the sample students with real ones (sample rows are rejected on upload).<br />
+              1. Pick the interview and download its template. It has one example row with the exact <strong>Interview Template</strong> name already filled in — replace it with your real students (the example row is rejected if uploaded as-is).<br />
               <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "6px 0 8px", flexWrap: "wrap" }}>
                 <select value={eligTemplatePick} onChange={e => setEligTemplatePick(e.target.value)} style={{ ...inputS, width: 260 }}>
                   <option value="">All interview templates</option>
@@ -4282,8 +4264,8 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 </select>
                 <Btn variant="secondary" size="sm" onClick={() => downloadEligibilityTemplate(eligTemplatePick)}>Download Template</Btn>
               </div>
-              2. One row per student per interview template. <strong>Eligibility Status</strong> is Eligible or Not Eligible.<br />
-              3. Choose the file — you'll see a preview with any errors before anything is uploaded. Rows with errors are skipped; a student + template pair that's already uploaded gets its status updated.<br />
+              2. Add only the students who are eligible — one row per student per interview template. Anyone in the file is marked eligible.<br />
+              3. Choose the file — you'll see a preview with any errors before anything is uploaded. Rows with errors are skipped; a student + template pair that's already uploaded is just refreshed. To remove a student uploaded by mistake, delete their row on this tab.<br />
               Students are matched to interviews by <strong>Student UID</strong>, so it must be the same UID the Interview Coordinator App has.
             </div>
             ) : (
@@ -4345,7 +4327,6 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                             <th style={pth}>Row</th>
                             <th style={pth}>Student</th>
                             <th style={pth}>Interview Template</th>
-                            <th style={pth}>Eligibility</th>
                             <th style={pth}>Check</th>
                           </tr>
                         </thead>
@@ -4360,7 +4341,6 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                                   <div style={{ fontSize: 11, color: C.muted }}>{r.studentId || "—"}</div>
                                 </td>
                                 <td style={cell}>{r.templateSlot ? slotLabel(r.templateSlot) : (r.rawTemplate || "—")}</td>
-                                <td style={cell}>{r.eligible === true ? <Badge color="green">Eligible</Badge> : r.eligible === false ? <Badge color="gray">Not Eligible</Badge> : (r.rawStatus || "—")}</td>
                                 <td style={cell}>
                                   {r.action === "error"
                                     ? <div style={{ color: C.red, lineHeight: 1.5 }}>{r.errors.map(e => <div key={e}>{e}</div>)}</div>
