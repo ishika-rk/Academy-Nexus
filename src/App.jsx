@@ -6458,7 +6458,7 @@ function rampColor(ramp, index, count) {
 // the dot carries identity, the text stays in ink color rather than the segment's hue (a light
 // segment color, e.g. the yellow Verdict Band step, would be unreadable as text). Hovering a
 // segment shows its exact share via the native title tooltip. Segments already carry >0 values.
-function StackedBar({ segments, width = 150 }) {
+function StackedBar({ segments, width = 120 }) {
   const total = segments.reduce((s, seg) => s + seg.value, 0);
   if (total === 0) return <span style={{ color: C.muted, fontSize: 11 }}>—</span>;
   return (
@@ -6476,7 +6476,7 @@ function StackedBar({ segments, width = 150 }) {
           />
         ))}
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", maxWidth: width }}>
         {segments.map(seg => (
           <span key={seg.label} style={{ fontSize: 10.5, color: C.muted, display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: seg.color, display: "inline-block", flexShrink: 0 }} />
@@ -6506,8 +6506,8 @@ function FunnelCount({ value, of, ofLabel }) {
 // added later (just more table rows), and Clearance / Verdict Band / Levels each get their own
 // column instead of badges piled together with no way to tell which stat is which.
 function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }) {
-  const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 14px", borderBottom: `1px solid ${C.border}` };
-  const tdStyle = { padding: "12px 14px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
+  const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 10px", borderBottom: `1px solid ${C.border}` };
+  const tdStyle = { padding: "10px 10px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
 
   return (
     <div>
@@ -6550,7 +6550,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                     onMouseEnter={e => e.currentTarget.style.background = C.surfaceAlt}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                   >
-                    <td style={{ ...tdStyle, fontWeight: 700, color: C.text, whiteSpace: "nowrap" }}>{slot.label}</td>
+                    <td style={{ ...tdStyle, fontWeight: 700, color: C.text, width: 140, minWidth: 120 }}>{slot.label}</td>
                     <td style={tdStyle}>
                       {stats.eligible === null
                         ? <span style={{ color: C.muted }} title="No eligibility uploaded for this template yet (Results → Interview Eligibility)">—</span>
