@@ -6668,6 +6668,24 @@ function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
     cancelled,
     pending: hasEligibility ? eligibleIds.size - attempted : null,
     notOnList: hasEligibility ? byStudent.size - funnel.length : 0,
+    // Details for the "not on list" popup. possibleMatch = someone on this template's eligibility
+    // list with the same name, which usually means the UID differs between the CSV and the
+    // Interview App rather than the student genuinely not being eligible.
+    notOnListStudents: !hasEligibility ? [] : [...byStudent.entries()]
+      .filter(([uid]) => !eligibleIds.has(uid))
+      .map(([uid, attempts]) => {
+        const last = attempts.reduce((best, a) => (a.at > best.at ? a : best));
+        const name = (last.iv.candidateName || "").trim();
+        const normName = name.toLowerCase().replace(/\s+/g, " ");
+        const possibleMatch = normName && eligibility.find(e => e.templateSlot === slotKey && e.eligible
+          && (e.name || "").trim().toLowerCase().replace(/\s+/g, " ") === normName);
+        return {
+          uid, name, email: last.iv.candidateEmail || "",
+          date: last.iv.scheduledDate || "", status: last.row.status || last.iv.status || "",
+          attempts: attempts.length,
+          possibleMatch: possibleMatch ? { name: possibleMatch.name, uid: possibleMatch.studentId } : null,
+        };
+      }),
     cleared: latestRows.filter(r => r.status === "Cleared").length,
     notCleared: latestRows.filter(r => r.status === "Not Cleared").length,
     verdictCounts: tallyNonBlank(latestRows, "verdict"),
@@ -6742,6 +6760,7 @@ function FunnelCount({ value, of, ofLabel }) {
 // added later (just more table rows), and Clearance / Verdict Band / Levels each get their own
 // column instead of badges piled together with no way to tell which stat is which.
 function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }) {
+  const [notOnListView, setNotOnListView] = useState(null); // { label, students } | null
   const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 10px", borderBottom: `1px solid ${C.border}` };
   const tdStyle = { padding: "10px 10px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
 
@@ -6792,7 +6811,11 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                         ? <span style={{ color: C.muted }} title="No eligibility uploaded for this template yet (Results → Interview Eligibility)">—</span>
                         : <strong style={{ fontSize: 13, color: C.text }}>{stats.eligible}</strong>}
                       {stats.notOnList > 0 && (
-                        <div style={{ fontSize: 10.5, color: C.red, marginTop: 2 }} title="Interviewed for this template but not on its eligibility list — not counted in this funnel">
+                        <div
+                          onClick={e => { e.stopPropagation(); setNotOnListView({ label: slot.label, students: stats.notOnListStudents }); }}
+                          style={{ fontSize: 10.5, color: C.red, marginTop: 2, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}
+                          title="Interviewed for this template but not on its eligibility list — not counted in this funnel. Click to see who."
+                        >
                           ⚠️ +{stats.notOnList} not on list
                         </div>
                       )}
@@ -6824,6 +6847,48 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
           All counts are unique students (matched by Student UID). Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted. Attempted = completed or partially completed at least one interview (no-show/cancelled don't count); Clearance, Verdict Band and Levels use each student's latest decided attempt. Cancelled / No-Show = never attempted, latest interview has that status. Partially Completed = attempted, but never fully completed. Pending = Eligible − Attempted.
         </div>
       </div>
+      {notOnListView && (
+        <Modal title={`Not on eligibility list — ${notOnListView.label}`} onClose={() => setNotOnListView(null)} width={760}>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
+            These students were interviewed for this template, but their Student UID isn't on its eligibility list (Results → Interview Eligibility), so they're left out of the funnel.
+            Fix it by uploading them, or — if a <strong>possible match</strong> is shown — by correcting the UID in your CSV to the one the Interview App has.
+          </div>
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, overflow: "auto", maxHeight: 420 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.surfaceAlt }}>
+                  <th style={thStyle}>Student (Interview App)</th>
+                  <th style={thStyle}>Latest Interview</th>
+                  <th style={thStyle}>Possible Match on List</th>
+                </tr>
+              </thead>
+              <tbody>
+                {notOnListView.students.map(st => (
+                  <tr key={st.uid}>
+                    <td style={tdStyle}>
+                      <div style={{ fontWeight: 700, color: C.text }}>{st.name || "—"}</div>
+                      <div style={{ fontSize: 11, color: C.muted, wordBreak: "break-all" }}>{st.uid}</div>
+                      {st.email && <div style={{ fontSize: 11, color: C.muted }}>{st.email}</div>}
+                    </td>
+                    <td style={tdStyle}>
+                      <div>{st.date ? fmtDate(st.date) : "—"}</div>
+                      <div style={{ fontSize: 11, color: C.muted }}>{st.status || "—"}{st.attempts > 1 ? ` · ${st.attempts} attempts` : ""}</div>
+                    </td>
+                    <td style={tdStyle}>
+                      {st.possibleMatch ? (
+                        <>
+                          <div style={{ fontWeight: 700, color: C.text }}>{st.possibleMatch.name}</div>
+                          <div style={{ fontSize: 11, color: C.red, wordBreak: "break-all" }}>UID on list: {st.possibleMatch.uid}</div>
+                        </>
+                      ) : <span style={{ color: C.muted }}>No one with this name</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
