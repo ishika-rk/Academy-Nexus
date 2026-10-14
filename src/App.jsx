@@ -3867,6 +3867,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   const [sendError, setSendError] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [eligTemplateFilter, setEligTemplateFilter] = useState("");
+  const [eligSearch, setEligSearch] = useState("");
   const [eligView, setEligView] = useState("students"); // "students" | "uploads"
   const [eligTemplatePick, setEligTemplatePick] = useState("");
   const [eligPreview, setEligPreview] = useState(null); // { fileName, rows } from parseEligibilityPreview
@@ -3890,11 +3891,15 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
 
   const PROGRAMS = [{ id: "online", label: "Online" }, { id: "offline", label: "Offline" }, { id: "eligibility", label: "Interview Eligibility" }];
   const isEligTab = programTab === "eligibility";
-  useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); }, [programTab, eligTemplateFilter]);
+  useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); }, [programTab, eligTemplateFilter, eligSearch]);
 
   const tabResults = isEligTab
     ? (eligibility || [])
         .filter(e => e.eligible !== false && (!eligTemplateFilter || e.templateSlot === eligTemplateFilter))
+        .filter(e => {
+          const q = eligSearch.trim().toLowerCase();
+          return !q || [e.name, e.studentId, e.email, e.phone].some(v => (v || "").toLowerCase().includes(q));
+        })
         .sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || "") || (a.name || "").localeCompare(b.name || ""))
     : (results || [])
         .filter(r => (r.program || "online") === programTab)
@@ -4149,18 +4154,29 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         return (<>
           {viewToggle}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", flex: 1 }}>
+            <div style={{ position: "relative", width: 280, maxWidth: "100%" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.muted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input value={eligSearch} onChange={e => setEligSearch(e.target.value)} placeholder="Search name, UID, email or mobile" style={{ ...inputS, paddingLeft: 30, paddingRight: eligSearch ? 28 : 10 }} />
+              {eligSearch && (
+                <button onClick={() => setEligSearch("")} title="Clear search" style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 14, padding: 2 }}>✕</button>
+              )}
+            </div>
             <select value={eligTemplateFilter} onChange={e => setEligTemplateFilter(e.target.value)} style={{ ...inputS, width: 280 }}>
               <option value="">All interview templates</option>
               {INTERVIEW_STATS_SLOTS.map(sl => (
                 <option key={sl.slotKey} value={sl.slotKey}>{sl.label} ({all.filter(e => e.templateSlot === sl.slotKey && e.eligible).length} eligible)</option>
               ))}
             </select>
+            </div>
             <div style={{ fontSize: 12, color: C.muted }}>
-              <strong style={{ color: C.text }}>{tabResults.length}</strong> eligible students
+              <strong style={{ color: C.text }}>{tabResults.length}</strong> {eligSearch.trim() ? "matching" : "eligible"} students
             </div>
           </div>
           {tabResults.length === 0 ? (
-            <EmptyState icon="🎯" title="No eligibility uploaded yet" sub="Upload a CSV of which students are eligible for each interview template — it feeds the funnel on the Interviews Overview." />
+            eligSearch.trim()
+              ? <EmptyState icon="🔍" title="No matching students" sub={`No eligible student matches "${eligSearch.trim()}"${eligTemplateFilter ? ` for ${slotLabel(eligTemplateFilter)}` : ""}.`} />
+              : <EmptyState icon="🎯" title="No eligibility uploaded yet" sub="Upload a CSV of which students are eligible for each interview template — it feeds the funnel on the Interviews Overview." />
           ) : (
             <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
