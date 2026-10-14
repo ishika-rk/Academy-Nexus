@@ -4424,7 +4424,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               </div>
             )}
 
-            {importStatus && importStatus !== "importing" && (
+            {importStatus && typeof importStatus === "object" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ background: importStatus.errors > 0 ? "#fef3c7" : "#dcfce7", border: `1px solid ${importStatus.errors > 0 ? "#fde68a" : "#86efac"}`, borderRadius: 8, padding: "12px 16px", fontSize: 13 }}>
                   <div style={{ fontWeight: 700, color: C.text, marginBottom: 6 }}>Import complete</div>
