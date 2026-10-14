@@ -3810,6 +3810,15 @@ function fileSlug(v) {
   return (v || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+// A deleted upload stays in Upload History → Deleted (restorable) for this long, then gets
+// permanently deleted the next time an admin/POC opens the Results page (there's no scheduled
+// job to do it at exactly 30 days).
+const ELIG_UPLOAD_RETENTION_DAYS = 30;
+const ELIG_UPLOAD_RETENTION_MS = ELIG_UPLOAD_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+function fmtDateTimeShort(iso) {
+  return iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+}
+
 // One example row with the chosen interview's exact template name pre-filled. With no interview
 // picked, it uses the first template just as an example. The UID keeps the SAMPLE- prefix so the
 // preview rejects the row if it's uploaded without being replaced.
@@ -3847,7 +3856,7 @@ function parseEligibilityPreview(text, existingIds) {
   });
 }
 
-function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, role }) {
+function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUpload, onRestoreEligibilityUpload, onPurgeEligibilityUpload, role }) {
   const [programTab, setProgramTab] = useState("online");
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PAGE_SIZE = 10;
@@ -3862,7 +3871,22 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   const [eligTemplatePick, setEligTemplatePick] = useState("");
   const [eligPreview, setEligPreview] = useState(null); // { fileName, rows } from parseEligibilityPreview
   const [eligPreviewErrorsOnly, setEligPreviewErrorsOnly] = useState(false);
+  const [restoringId, setRestoringId] = useState(null);
   const fileInputRef = useRef(null);
+
+  // Permanently deletes uploads that have sat in Deleted past the retention window. Runs from
+  // any admin/POC session that opens this page — there's no backend scheduler for it.
+  const purgeRequested = useRef(new Set()); // so re-renders before the snapshot catches up don't re-send deletes
+  useEffect(() => {
+    if (!can(role, "results.write")) return;
+    const cutoff = Date.now() - ELIG_UPLOAD_RETENTION_MS;
+    (eligibilityUploads || [])
+      .filter(u => u.deletedAt && Date.parse(u.deletedAt) < cutoff && !purgeRequested.current.has(u.id))
+      .forEach(u => {
+        purgeRequested.current.add(u.id);
+        onPurgeEligibilityUpload(u.id).catch(err => console.error("purge failed:", err));
+      });
+  }, [eligibilityUploads, role, onPurgeEligibilityUpload]);
 
   const PROGRAMS = [{ id: "online", label: "Online" }, { id: "offline", label: "Offline" }, { id: "eligibility", label: "Interview Eligibility" }];
   const isEligTab = programTab === "eligibility";
@@ -4043,51 +4067,81 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         const totalPages = Math.max(1, Math.ceil(tabResults.length / RESULTS_PAGE_SIZE));
         const pageRows = tabResults.slice((resultsPage - 1) * RESULTS_PAGE_SIZE, resultsPage * RESULTS_PAGE_SIZE);
         const uploads = [...(eligibilityUploads || [])].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
+        const activeUploads = uploads.filter(u => !u.deletedAt);
+        const deletedUploads = uploads.filter(u => u.deletedAt).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
         const viewToggle = (
           <div style={{ display: "inline-flex", border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden", marginBottom: 14 }}>
-            {[{ id: "students", label: "Students" }, { id: "uploads", label: `Upload History (${uploads.length})` }].map(v => (
+            {[{ id: "students", label: "Students" }, { id: "uploads", label: `Upload History (${activeUploads.length})` }].map(v => (
               <button key={v.id} onClick={() => setEligView(v.id)} style={{ background: eligView === v.id ? C.accent : C.surface, color: eligView === v.id ? "#fff" : C.text, border: "none", padding: "7px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{v.label}</button>
             ))}
           </div>
         );
         if (eligView === "uploads") {
+          const canWrite = can(role, "results.write");
+          const uploadTable = (list, deleted) => (
+            <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: C.surfaceAlt }}>
+                    <th style={thBase}>Uploaded On</th>
+                    <th style={thBase}>File</th>
+                    <th style={thBase}>Uploaded By</th>
+                    <th style={thBase}>Interview Templates</th>
+                    <th style={thBase}>Eligible Students</th>
+                    {deleted && <th style={thBase}>Deleted</th>}
+                    <th style={{ ...thBase, width: "1px" }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map((u, i) => {
+                    const cell = { verticalAlign: "middle", background: i % 2 === 0 ? "#fff" : C.surfaceAlt, border: `1px solid ${C.border}`, padding: "8px 12px", color: deleted ? C.muted : C.text };
+                    const daysLeft = deleted ? Math.max(0, Math.ceil((Date.parse(u.deletedAt) + ELIG_UPLOAD_RETENTION_MS - Date.now()) / 86400000)) : 0;
+                    return (
+                      <tr key={u.id}>
+                        <td style={{ ...cell, whiteSpace: "nowrap" }}>{fmtDateTimeShort(u.uploadedAt)}</td>
+                        <td style={cell}>{u.fileName || "—"}</td>
+                        <td style={cell}>{u.uploadedBy || "—"}</td>
+                        <td style={cell}>{(u.templateSlots || []).map(slotLabel).join(", ") || "—"}</td>
+                        <td style={{ ...cell, whiteSpace: "nowrap" }}><strong>{u.eligibleCount ?? u.rowCount ?? 0}</strong> students</td>
+                        {deleted && (
+                          <td style={cell}>
+                            <div style={{ whiteSpace: "nowrap" }}>{fmtDateTimeShort(u.deletedAt)}</div>
+                            <div style={{ fontSize: 11 }}>by {u.deletedBy || "—"}</div>
+                            <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>{daysLeft} day{daysLeft === 1 ? "" : "s"} left</div>
+                          </td>
+                        )}
+                        <td style={cell}>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <Btn variant="secondary" size="sm" onClick={() => exportEligibilityUpload(u)}>Download CSV</Btn>
+                            {canWrite && !deleted && <Btn variant="danger" size="sm" onClick={() => setConfirmDelete({ ...u, _kind: "upload" })}>Delete</Btn>}
+                            {canWrite && deleted && (
+                              <Btn size="sm" disabled={restoringId === u.id} onClick={async () => {
+                                setRestoringId(u.id);
+                                try { await onRestoreEligibilityUpload(u); } catch (err) { console.error("restore failed:", err); alert(`Restore failed: ${err.message || err}`); }
+                                finally { setRestoringId(null); }
+                              }}>{restoringId === u.id ? "Restoring…" : "Restore"}</Btn>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
           return (<>
             {viewToggle}
-            {uploads.length === 0 ? (
-              <EmptyState icon="🗂️" title="No uploads yet" sub="Every eligibility CSV you upload is listed here with its date, and can be downloaded again." />
-            ) : (
-              <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <thead>
-                    <tr style={{ background: C.surfaceAlt }}>
-                      <th style={thBase}>Uploaded On</th>
-                      <th style={thBase}>File</th>
-                      <th style={thBase}>Uploaded By</th>
-                      <th style={thBase}>Interview Templates</th>
-                      <th style={thBase}>Eligible Students</th>
-                      <th style={{ ...thBase, width: "1px" }} />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {uploads.map((u, i) => {
-                      const cell = { verticalAlign: "middle", background: i % 2 === 0 ? "#fff" : C.surfaceAlt, border: `1px solid ${C.border}`, padding: "8px 12px" };
-                      return (
-                        <tr key={u.id}>
-                          <td style={{ ...cell, whiteSpace: "nowrap" }}>{u.uploadedAt ? new Date(u.uploadedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
-                          <td style={cell}>{u.fileName || "—"}</td>
-                          <td style={cell}>{u.uploadedBy || "—"}</td>
-                          <td style={cell}>{(u.templateSlots || []).map(slotLabel).join(", ") || "—"}</td>
-                          <td style={{ ...cell, whiteSpace: "nowrap" }}>
-                            <strong style={{ color: C.text }}>{u.eligibleCount ?? u.rowCount ?? 0}</strong> students
-                          </td>
-                          <td style={cell}>
-                            <Btn variant="secondary" size="sm" onClick={() => exportEligibilityUpload(u)}>Download CSV</Btn>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            {activeUploads.length === 0
+              ? <EmptyState icon="🗂️" title="No uploads yet" sub="Every eligibility CSV you upload is listed here with its date, and can be downloaded again." />
+              : uploadTable(activeUploads, false)}
+            {deletedUploads.length > 0 && (
+              <div style={{ marginTop: 24 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>Deleted ({deletedUploads.length})</div>
+                <div style={{ fontSize: 12, color: C.muted, margin: "2px 0 10px" }}>
+                  Restorable for {ELIG_UPLOAD_RETENTION_DAYS} days after deletion, then permanently deleted. Restoring puts its students back on the eligibility list.
+                </div>
+                {uploadTable(deletedUploads, true)}
               </div>
             )}
           </>);
@@ -4392,15 +4446,22 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
       )}
 
       {confirmDelete && (
-        <Modal title={confirmDelete._kind === "eligibility" ? "Delete Eligibility" : "Delete Result"} onClose={() => setConfirmDelete(null)} width={420}>
+        <Modal title={confirmDelete._kind === "upload" ? "Delete Upload" : confirmDelete._kind === "eligibility" ? "Delete Eligibility" : "Delete Result"} onClose={() => setConfirmDelete(null)} width={460}>
           <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
-            {confirmDelete._kind === "eligibility"
+            {confirmDelete._kind === "upload"
+              ? <>Delete the upload <strong>{confirmDelete.fileName || "—"}</strong> from {fmtDateTimeShort(confirmDelete.uploadedAt)} ({confirmDelete.eligibleCount ?? confirmDelete.rowCount ?? 0} students)?<br /><br />
+                  Its students are removed from the eligibility list now — except anyone who's also in another upload. You can restore it from <strong>Upload History → Deleted</strong> for {ELIG_UPLOAD_RETENTION_DAYS} days; after that it's permanently deleted.</>
+              : confirmDelete._kind === "eligibility"
               ? <>Delete <strong>{confirmDelete.name || confirmDelete.studentId}</strong>'s eligibility for {slotLabel(confirmDelete.templateSlot)}? This cannot be undone.</>
               : <>Delete the result for <strong>{confirmDelete.name || confirmDelete.studentId}</strong> — {confirmDelete.examName}? This cannot be undone.</>}
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmDelete(null)}>Cancel</Btn>
-            <Btn variant="danger" onClick={async () => { await (confirmDelete._kind === "eligibility" ? onDeleteEligibility : onDeleteResult)(confirmDelete.id); setConfirmDelete(null); }}>Delete</Btn>
+            <Btn variant="danger" onClick={async () => {
+              if (confirmDelete._kind === "upload") await onDeleteEligibilityUpload(confirmDelete);
+              else await (confirmDelete._kind === "eligibility" ? onDeleteEligibility : onDeleteResult)(confirmDelete.id);
+              setConfirmDelete(null);
+            }}>Delete</Btn>
           </div>
         </Modal>
       )}
@@ -8124,6 +8185,48 @@ export default function App() {
   const onDeleteEligibility = async (id) => {
     await deleteDoc(doc(db, "interviewEligibility", id));
   };
+  // Rebuilds the live interviewEligibility docs for the given student+template ids from whichever
+  // non-deleted upload most recently contained each one; an id no active upload contains is
+  // removed. onlyExisting skips ids with no live doc, so deleting an upload never brings back a
+  // student someone already removed by hand from the Students view.
+  const syncEligibilityFromUploads = async (ids, uploads, { onlyExisting }) => {
+    const liveIds = new Set(eligibility.map(e => e.id));
+    const active = uploads.filter(u => !u.deletedAt).map(u => ({
+      u, byId: new Map((u.rows || []).map(r => [eligibilityDocId(r.studentId, r.templateSlot), r])),
+    }));
+    const ops = [];
+    for (const id of new Set(ids)) {
+      if (onlyExisting && !liveIds.has(id)) continue;
+      let best = null;
+      for (const a of active) {
+        const row = a.byId.get(id);
+        if (row && (!best || (a.u.uploadedAt || "") > (best.u.uploadedAt || ""))) best = { u: a.u, row };
+      }
+      ops.push(best
+        ? (b) => b.set(doc(db, "interviewEligibility", id), { ...best.row, phone: best.row.phone || "", eligible: true, importedAt: best.u.uploadedAt, uploadId: best.u.id })
+        : (b) => b.delete(doc(db, "interviewEligibility", id)));
+    }
+    for (let i = 0; i < ops.length; i += 450) {
+      const batch = writeBatch(db);
+      ops.slice(i, i + 450).forEach(op => op(batch));
+      await batch.commit();
+    }
+  };
+  const uploadRowIds = (u) => (u.rows || []).map(r => eligibilityDocId(r.studentId, r.templateSlot));
+  const onDeleteEligibilityUpload = async (upload) => {
+    const deletedAt = new Date().toISOString();
+    await updateDoc(doc(db, "eligibilityUploads", upload.id), { deletedAt, deletedBy: currentUser?.email || "" });
+    const after = eligibilityUploads.map(u => (u.id === upload.id ? { ...u, deletedAt } : u));
+    await syncEligibilityFromUploads(uploadRowIds(upload), after, { onlyExisting: true });
+  };
+  const onRestoreEligibilityUpload = async (upload) => {
+    await updateDoc(doc(db, "eligibilityUploads", upload.id), { deletedAt: null, deletedBy: null });
+    const after = eligibilityUploads.map(u => (u.id === upload.id ? { ...u, deletedAt: null } : u));
+    await syncEligibilityFromUploads(uploadRowIds(upload), after, { onlyExisting: false });
+  };
+  const onPurgeEligibilityUpload = async (id) => {
+    await deleteDoc(doc(db, "eligibilityUploads", id));
+  };
   const onSendToInterview = async (students) => {
     const idToken = await auth.currentUser.getIdToken();
     const res = await fetch("/api/send-to-interview", {
@@ -8288,7 +8391,7 @@ export default function App() {
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
-          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} role={role} />}
+          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUpload={onDeleteEligibilityUpload} onRestoreEligibilityUpload={onRestoreEligibilityUpload} onPurgeEligibilityUpload={onPurgeEligibilityUpload} role={role} />}
           {page === "interviews" && <InterviewsPage role={role} eligibility={eligibility} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
