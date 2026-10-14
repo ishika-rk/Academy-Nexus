@@ -3773,7 +3773,7 @@ function clearanceBadge(status) {
 // Only eligible students are uploaded — being in the file is what makes a student eligible, so
 // there's no status column. (Docs still store eligible: true; older docs may hold eligible: false
 // from before the column was dropped, and are ignored everywhere.)
-const ELIGIBILITY_CSV_HEADERS = ["Student UID", "Student Name", "Email ID", "Interview Template"];
+const ELIGIBILITY_CSV_HEADERS = ["Student UID", "Student Name", "Mobile Number", "Email ID", "Interview Template"];
 
 // Accepts either the name shown on the Interviews page ("Bucket B — TR1", "IRP L1") or the Interview
 // App's own templateName ("Academy Bucket B TR1", "IRP L1 Human Interview"), so a POC can use
@@ -3815,7 +3815,7 @@ function fileSlug(v) {
 // preview rejects the row if it's uploaded without being replaced.
 function downloadEligibilityTemplate(slotKey) {
   const label = slotLabel(slotKey || INTERVIEW_STATS_SLOTS[0].slotKey);
-  const row = [`${ELIGIBILITY_SAMPLE_PREFIX}UID-001`, "Priya Sharma", "priya.sharma@example.com", label];
+  const row = [`${ELIGIBILITY_SAMPLE_PREFIX}UID-001`, "Priya Sharma", "9876543210", "priya.sharma@example.com", label];
   downloadRowsCsv(`interview-eligibility-template-${slotKey ? fileSlug(label) : "example"}.csv`, [ELIGIBILITY_CSV_HEADERS, row]);
 }
 
@@ -3840,7 +3840,7 @@ function parseEligibilityPreview(text, existingIds) {
       else seen.set(id, line);
     }
     return {
-      line, id, studentId, name: getCol(row, "name"), email: getCol(row, "email"),
+      line, id, studentId, name: getCol(row, "name"), phone: getCol(row, "phone"), email: getCol(row, "email"),
       rawTemplate, templateSlot, errors,
       action: errors.length ? "error" : existingIds.has(id) ? "update" : "new",
     };
@@ -3904,7 +3904,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     setImportStatus("importing");
     try {
       await onImportEligibility(
-        valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name, email: r.email, templateSlot: r.templateSlot, eligible: true } })),
+        valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name, phone: r.phone, email: r.email, templateSlot: r.templateSlot, eligible: true } })),
         { fileName: eligPreview.fileName },
       );
       const updated = valid.filter(r => r.action === "update").length;
@@ -3917,7 +3917,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   };
 
   const exportEligibilityUpload = (u) => {
-    const rows = (u.rows || []).map(r => [r.studentId, r.name, r.email, slotLabel(r.templateSlot)]);
+    const rows = (u.rows || []).map(r => [r.studentId, r.name, r.phone || "", r.email, slotLabel(r.templateSlot)]);
     downloadRowsCsv(`interview-eligibility-upload-${(u.uploadedAt || "").slice(0, 10)}-${fileSlug(u.fileName || u.id)}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
   };
 
@@ -8113,7 +8113,7 @@ export default function App() {
       rowCount: records.length,
       eligibleCount: records.filter(r => r.data.eligible).length,
       templateSlots: [...new Set(records.map(r => r.data.templateSlot))],
-      rows: records.map(r => ({ studentId: r.data.studentId, name: r.data.name, email: r.data.email, templateSlot: r.data.templateSlot, eligible: r.data.eligible })),
+      rows: records.map(r => ({ studentId: r.data.studentId, name: r.data.name, phone: r.data.phone || "", email: r.data.email, templateSlot: r.data.templateSlot, eligible: r.data.eligible })),
     });
     for (let i = 0; i < records.length; i += 450) {
       const batch = writeBatch(db);
