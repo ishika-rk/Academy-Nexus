@@ -67,7 +67,7 @@ const PERMISSIONS = {
   content:     ["exam.read", "student.count", "configs.write", "generate", "results.read", "interviews.read"],
   // Deliberately minimal by default — meant for roles scoped to a single tab (e.g. a POC who
   // only handles post-offline interview coordination). Grant more via the Team & Roles matrix.
-  interview_poc: ["interviews.read"],
+  interview_poc: ["interviews.read", "results.read", "results.write"],
 };
 // Actions added after the settings/permissions doc was first seeded in Firestore — the
 // live doc only self-seeds from PERMISSIONS once (on first-ever creation), so any action
@@ -3857,7 +3857,7 @@ function parseEligibilityPreview(text, existingIds) {
 }
 
 function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUpload, onRestoreEligibilityUpload, onPurgeEligibilityUpload, role }) {
-  const [programTab, setProgramTab] = useState("online");
+  const [programTab, setProgramTab] = useState("eligibility");
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PAGE_SIZE = 10;
   const [showImportModal, setShowImportModal] = useState(false);
@@ -3889,7 +3889,10 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
       });
   }, [eligibilityUploads, role, onPurgeEligibilityUpload]);
 
-  const PROGRAMS = [{ id: "online", label: "Online" }, { id: "offline", label: "Offline" }, { id: "eligibility", label: "Interview Eligibility" }];
+  // Online/Offline results tabs were removed from the UI on request (2026-10-15) — only Interview
+  // Eligibility is shown. Their import/table code below is kept but unreachable; add them back here
+  // to restore them.
+  const PROGRAMS = [{ id: "eligibility", label: "Interview Eligibility" }];
   const isEligTab = programTab === "eligibility";
   useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); }, [programTab, eligTemplateFilter, eligSearch]);
 
@@ -7630,7 +7633,7 @@ const PERMISSION_ROWS = [
   { group: "Configs",    action: "configs.assessmentLink", label: "Edit assessment links in Config Library" },
   { group: "Generation", action: "generate",      label: "Generate assessments" },
   { group: "Results",    action: "results.read",  label: "View Results tab" },
-  { group: "Results",    action: "results.write", label: "Import results / send to interview" },
+  { group: "Results",    action: "results.write", label: "Upload / delete interview eligibility" },
   { group: "Interviews", action: "interviews.read", label: "View Interviews tab" },
   { group: "Interviews", action: "interviews.sync", label: "Sync interviews from the Interview Coordinator App" },
   { group: "Interviews", action: "interviews.delete", label: "Delete an interview row" },
