@@ -52,6 +52,9 @@ service cloud.firestore {
     match /interviews/{id}     { allow read, write: if isSignedIn(); }
     match /interviewEligibility/{id} { allow read, write: if isSignedIn(); }
     match /eligibilityUploads/{id}   { allow read, write: if isSignedIn(); }
+    // Results Directory: metadata doc + chunked rows/students subcollections.
+    match /resultsFiles/{id}         { allow read, write: if isSignedIn(); }
+    match /resultsFiles/{id}/{sub=**} { allow read, write: if isSignedIn(); }
     match /driveExpenses/{id}  { allow read, write: if isSignedIn(); }
   }
 }

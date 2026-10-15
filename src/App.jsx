@@ -62,12 +62,12 @@ const getExamCategoryHead = (e) => {
 // ─── Roles & Permissions ──────────────────────────────────────────────────────
 const PERMISSIONS = {
   super_admin: ["*"],
-  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "results.read", "expenses.read", "interviews.read", "interviews.sync", "interviews.delete"],
-  poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write", "results.read", "expenses.read", "expenses.write", "interviews.read"],
+  admin:       ["exam.read", "exam.notify", "student.read", "student.count", "configs.write", "configs.assessmentLink", "generate", "results.write", "results.read", "expenses.read", "interviews.read", "interviews.sync", "interviews.delete", "resultsDirectory.read", "resultsDirectory.write"],
+  poc:         ["exam.read", "exam.write", "exam.notify", "student.read", "student.write", "student.count", "configs.read", "results.write", "results.read", "expenses.read", "expenses.write", "interviews.read", "resultsDirectory.read"],
   content:     ["exam.read", "student.count", "configs.write", "generate", "results.read", "interviews.read"],
   // Deliberately minimal by default — meant for roles scoped to a single tab (e.g. a POC who
   // only handles post-offline interview coordination). Grant more via the Team & Roles matrix.
-  interview_poc: ["interviews.read", "results.read", "results.write"],
+  interview_poc: ["interviews.read", "results.read", "results.write", "resultsDirectory.read"],
 };
 // Actions added after the settings/permissions doc was first seeded in Firestore — the
 // live doc only self-seeds from PERMISSIONS once (on first-ever creation), so any action
@@ -3765,6 +3765,479 @@ function clearanceBadge(status) {
   return <Badge color="gray">{s}</Badge>;
 }
 
+// ─── Results Directory ─────────────────────────────────────────────────────────
+// Topin results CSVs, stored exactly as downloaded (every exam has different subject/section
+// columns, so nothing is assumed about the file beyond four identity columns). It's the source of
+// students' contact details: an eligibility upload looks each UID up here to fill in a missing
+// Name / Mobile / Email. Stored as resultsFiles/{id} (metadata) plus chunked subcollections —
+// rows/{n} (the full file) and students/{n} (just UID/Name/Mobile/Email, so the lookup doesn't
+// have to download every score column) — since one big export can exceed Firestore's 1 MB doc cap.
+
+const RESULTS_DIR_COL_ALIASES = {
+  uid:   ["student uid", "uid", "user uid", "user id", "userid", "student id", "studentid", "candidate uid", "candidate id", "learner id"],
+  name:  ["student name", "name", "full name", "candidate name", "learner name", "user full name"],
+  phone: ["phone number", "phone", "mobile", "mobile number", "mobile no", "phone no", "contact number", "contact no", "whatsapp number"],
+  email: ["email id", "email", "email address", "user email", "mail id", "e mail", "student email", "candidate email"],
+};
+const RESULTS_DIR_COL_LABELS = { uid: "Student UID", name: "Name", phone: "Mobile", email: "Email" };
+const normHeader = (h) => String(h || "").toLowerCase().replace(/[_\-.]+/g, " ").replace(/\s+/g, " ").trim();
+
+// Column index for each identity field (-1 = not found). Only UID is required.
+function detectDirCols(headers) {
+  const norm = headers.map(normHeader);
+  const cols = {};
+  for (const [field, aliases] of Object.entries(RESULTS_DIR_COL_ALIASES)) {
+    cols[field] = norm.findIndex(h => aliases.includes(h));
+  }
+  return cols;
+}
+
+// Full RFC 4180 parse (quoted commas, "" escapes, line breaks inside quotes) — Topin exports can
+// carry free-text columns, which the simple parseCSV used elsewhere would split wrongly.
+function parseCsvRows(text) {
+  const src = text.replace(/^\uFEFF/, "");
+  const rows = [];
+  let row = [], cur = "", inQ = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inQ) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') { cur += '"'; i++; } else inQ = false;
+      } else cur += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ",") { row.push(cur); cur = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && src[i + 1] === "\n") i++;
+      row.push(cur); rows.push(row); row = []; cur = "";
+    } else cur += ch;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows.map(r => r.map(v => v.trim())).filter(r => r.some(v => v !== ""));
+}
+
+// Splits into pieces whose JSON stays well under Firestore's ~1 MB per-field limit.
+function chunkByBytes(items, maxChars = 450000) {
+  const chunks = [];
+  let cur = [], size = 2;
+  for (const it of items) {
+    const len = JSON.stringify(it).length + 1;
+    if (cur.length && size + len > maxChars) { chunks.push(cur); cur = []; size = 2; }
+    cur.push(it); size += len;
+  }
+  if (cur.length || chunks.length === 0) chunks.push(cur);
+  return chunks;
+}
+
+async function loadResultsChunks(fileId, sub, count) {
+  const snaps = await Promise.all(Array.from({ length: count || 0 }, (_, i) => getDoc(doc(db, "resultsFiles", fileId, sub, String(i)))));
+  return snaps.flatMap(sn => (sn.exists() ? JSON.parse(sn.data().data) : []));
+}
+
+// UID -> { name, phone, email, fileName } across every non-deleted results file. Files are applied
+// oldest first, so the most recently uploaded file wins, but a blank field never wipes out a value
+// an older file had.
+async function loadDirectoryLookup(files) {
+  const active = (files || []).filter(f => !f.deletedAt).sort((a, b) => (a.uploadedAt || "").localeCompare(b.uploadedAt || ""));
+  const lists = await Promise.all(active.map(f => loadResultsChunks(f.id, "students", f.studentChunks).then(rows => ({ f, rows }))));
+  const map = new Map();
+  for (const { f, rows } of lists) {
+    for (const [uid, name, phone, email] of rows) {
+      const k = normUid(uid);
+      if (!k) continue;
+      const prev = map.get(k) || {};
+      map.set(k, {
+        name: name || prev.name || "", phone: phone || prev.phone || "", email: email || prev.email || "",
+        fileName: f.fileName, uploadedAt: f.uploadedAt,
+      });
+    }
+  }
+  return map;
+}
+
+const PI_FIELD_LABELS = { name: "Name", phone: "Mobile", email: "Email" };
+function samePi(a, b, field) {
+  if (field === "phone") return a.replace(/\D/g, "").slice(-10) === b.replace(/\D/g, "").slice(-10);
+  const n = (v) => v.trim().toLowerCase().replace(/\s+/g, " ");
+  return n(a) === n(b);
+}
+// Field by field: a value in the POC's CSV wins (flagged if it differs from the Directory); a blank
+// is filled from the Directory; anything still blank is listed in `missing`.
+function enrichEligibilityRows(rows, lookup) {
+  return rows.map(r => {
+    if (r.action === "error") return r;
+    const d = lookup ? lookup.get(normUid(r.studentId)) : null;
+    const out = { ...r, mismatches: [], missing: [], dirFile: d ? d.fileName : "" };
+    let fromCsv = false, fromDir = false;
+    for (const f of ["name", "phone", "email"]) {
+      const csv = (r[f] || "").trim();
+      const dir = d ? (d[f] || "").trim() : "";
+      if (csv) {
+        fromCsv = true;
+        if (dir && !samePi(csv, dir, f)) out.mismatches.push(`${PI_FIELD_LABELS[f]} differs from Results Directory: ${dir}`);
+      } else if (dir) {
+        out[f] = dir;
+        fromDir = true;
+      }
+      if (!out[f]) out.missing.push(PI_FIELD_LABELS[f]);
+    }
+    out.detailsFrom = fromCsv && fromDir ? "mixed" : fromDir ? "directory" : fromCsv ? "csv" : "missing";
+    return out;
+  });
+}
+function missingPiFields(e) {
+  return ["name", "phone", "email"].filter(f => !(e[f] || "").trim()).map(f => PI_FIELD_LABELS[f]);
+}
+
+function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPurge }) {
+  const canWrite = can(role, "resultsDirectory.write");
+  const [showUpload, setShowUpload] = useState(false);
+  const [preview, setPreview] = useState(null); // { fileName, headers, rows, cols } | { error }
+  const [status, setStatus] = useState(null); // null | "uploading" | { studentCount, backfilled } | { failed }
+  const [viewing, setViewing] = useState(null); // { file, rows (null while loading), error }
+  const [viewSearch, setViewSearch] = useState("");
+  const [viewPage, setViewPage] = useState(1);
+  const [confirm, setConfirm] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+  const fileRef = useRef(null);
+  const purgeRequested = useRef(new Set());
+  const VIEW_PAGE_SIZE = 50;
+
+  // Permanently deletes files that have sat in Deleted past the retention window (no backend
+  // scheduler — runs from any admin session that opens this tab).
+  useEffect(() => {
+    if (!canWrite) return;
+    const cutoff = Date.now() - ELIG_UPLOAD_RETENTION_MS;
+    for (const f of files || []) {
+      if (!f.deletedAt || Date.parse(f.deletedAt) >= cutoff || purgeRequested.current.has(f.id)) continue;
+      purgeRequested.current.add(f.id);
+      onPurge(f).catch(err => console.error("results file purge failed:", err));
+    }
+  }, [files, canWrite, onPurge]);
+
+  const sorted = [...(files || [])].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
+  const active = sorted.filter(f => !f.deletedAt);
+  const deleted = sorted.filter(f => f.deletedAt);
+
+  const readFile = async (file) => {
+    setStatus(null);
+    try {
+      const all = parseCsvRows(await file.text());
+      if (all.length < 2) throw new Error("No rows found — the file needs a header row and at least one student.");
+      const headers = all[0];
+      const rows = all.slice(1).map(r => headers.map((_, i) => r[i] ?? ""));
+      setPreview({ fileName: file.name, headers, rows, cols: detectDirCols(headers) });
+    } catch (err) {
+      setPreview({ error: err.message || String(err) });
+    }
+  };
+
+  const upload = async () => {
+    setStatus("uploading");
+    try {
+      const res = await onUpload(preview);
+      setStatus(res);
+      setPreview(null);
+    } catch (err) {
+      console.error("results upload failed:", err);
+      setStatus({ failed: err.message || String(err) });
+    }
+  };
+
+  const openView = async (f) => {
+    setViewing({ file: f, rows: null });
+    setViewSearch("");
+    setViewPage(1);
+    try {
+      setViewing({ file: f, rows: await loadResultsChunks(f.id, "rows", f.rowChunks) });
+    } catch (err) {
+      setViewing({ file: f, rows: [], error: err.message || String(err) });
+    }
+  };
+
+  const download = async (f) => {
+    setBusyId(`dl:${f.id}`);
+    try {
+      const rows = viewing?.file?.id === f.id && viewing.rows ? viewing.rows : await loadResultsChunks(f.id, "rows", f.rowChunks);
+      const name = /\.csv$/i.test(f.fileName || "") ? f.fileName : `${f.fileName || "results"}.csv`;
+      downloadRowsCsv(name, [f.headers || [], ...rows]);
+    } catch (err) {
+      alert(`Download failed: ${err.message || err}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const thS = { fontSize: 10, fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase", border: `1px solid ${C.border}`, whiteSpace: "nowrap", padding: "6px 12px", textAlign: "left", color: C.muted, background: C.surfaceAlt };
+  const colSummary = (f) => ["uid", "name", "phone", "email"].map(k => `${RESULTS_DIR_COL_LABELS[k]}: ${f.cols?.[k] || "—"}`).join(" · ");
+
+  const fileTable = (list, isDeleted) => (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr>
+            <th style={thS}>Uploaded On</th>
+            <th style={thS}>File</th>
+            <th style={thS}>Uploaded By</th>
+            <th style={thS}>Students</th>
+            {isDeleted && <th style={thS}>Deleted</th>}
+            <th style={{ ...thS, width: "1px" }} />
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((f, i) => {
+            const cell = { verticalAlign: "middle", background: i % 2 === 0 ? "#fff" : C.surfaceAlt, border: `1px solid ${C.border}`, padding: "8px 12px", color: isDeleted ? C.muted : C.text };
+            const daysLeft = isDeleted ? Math.max(0, Math.ceil((Date.parse(f.deletedAt) + ELIG_UPLOAD_RETENTION_MS - Date.now()) / 86400000)) : 0;
+            return (
+              <tr key={f.id}>
+                <td style={{ ...cell, whiteSpace: "nowrap" }}>{fmtDateTimeShort(f.uploadedAt)}</td>
+                <td style={cell}>
+                  <div style={{ fontWeight: 700 }}>{f.fileName || "—"}</div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{(f.headers || []).length} columns · {colSummary(f)}</div>
+                </td>
+                <td style={cell}>{f.uploadedBy || "—"}</td>
+                <td style={{ ...cell, whiteSpace: "nowrap" }}><strong>{f.studentCount ?? 0}</strong>{f.rowCount !== f.studentCount ? <span style={{ fontSize: 11, color: C.muted }}> · {f.rowCount} rows</span> : null}</td>
+                {isDeleted && (
+                  <td style={cell}>
+                    <div style={{ whiteSpace: "nowrap" }}>{fmtDateTimeShort(f.deletedAt)}</div>
+                    <div style={{ fontSize: 11 }}>by {f.deletedBy || "—"}</div>
+                    <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>{daysLeft} day{daysLeft === 1 ? "" : "s"} left</div>
+                  </td>
+                )}
+                <td style={cell}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Btn variant="secondary" size="sm" onClick={() => openView(f)}>View</Btn>
+                    <Btn variant="secondary" size="sm" disabled={busyId === `dl:${f.id}`} onClick={() => download(f)}>{busyId === `dl:${f.id}` ? "Preparing…" : "Download CSV"}</Btn>
+                    {canWrite && !isDeleted && <Btn variant="danger" size="sm" onClick={() => setConfirm(f)}>Delete</Btn>}
+                    {canWrite && isDeleted && (
+                      <Btn size="sm" disabled={busyId === `rs:${f.id}`} onClick={async () => {
+                        setBusyId(`rs:${f.id}`);
+                        try { await onRestore(f); } catch (err) { alert(`Restore failed: ${err.message || err}`); } finally { setBusyId(null); }
+                      }}>{busyId === `rs:${f.id}` ? "Restoring…" : "Restore"}</Btn>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  // ── Upload preview stats ──
+  let pv = null;
+  if (preview && !preview.error) {
+    const uidIdx = preview.cols.uid;
+    const uids = uidIdx >= 0 ? preview.rows.map(r => normUid(r[uidIdx])) : [];
+    const withUid = uids.filter(Boolean);
+    const unique = new Set(withUid);
+    pv = { noUid: preview.rows.length - withUid.length, unique: unique.size, dupes: withUid.length - unique.size };
+  }
+  const setCol = (field, idx) => setPreview(p => ({ ...p, cols: { ...p.cols, [field]: idx } }));
+
+  // ── View modal rows ──
+  let viewRows = [], viewTotalPages = 1;
+  if (viewing?.rows) {
+    const q = viewSearch.trim().toLowerCase();
+    viewRows = q ? viewing.rows.filter(r => r.some(v => String(v).toLowerCase().includes(q))) : viewing.rows;
+    viewTotalPages = Math.max(1, Math.ceil(viewRows.length / VIEW_PAGE_SIZE));
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, color: C.muted, maxWidth: 720, lineHeight: 1.6 }}>
+          Topin results files, stored as downloaded. Download one to work out who cleared, then upload the eligible students on the Interview Eligibility tab — any missing Name / Mobile / Email is filled in from here by Student UID.
+        </div>
+        {canWrite && <Btn onClick={() => { setPreview(null); setStatus(null); setShowUpload(true); }}>Upload Results CSV</Btn>}
+      </div>
+
+      {active.length === 0
+        ? <EmptyState icon="📚" title="No results files yet" sub={canWrite ? "Upload a results CSV downloaded from Topin to get started." : "An admin uploads Topin results files here."} />
+        : fileTable(active, false)}
+
+      {deleted.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>Deleted ({deleted.length})</div>
+          <div style={{ fontSize: 12, color: C.muted, margin: "2px 0 10px" }}>
+            Restorable for {ELIG_UPLOAD_RETENTION_DAYS} days after deletion, then permanently deleted. Deleted files aren't used to fill in student details.
+          </div>
+          {fileTable(deleted, true)}
+        </div>
+      )}
+
+      {showUpload && (
+        <Modal title="Upload Results CSV" width={900} onClose={() => { setShowUpload(false); setPreview(null); setStatus(null); }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ background: C.surfaceAlt, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", fontSize: 12, color: C.muted, lineHeight: 1.7 }}>
+              <div style={{ fontWeight: 700, color: C.text, marginBottom: 4 }}>How it works</div>
+              Upload the results CSV exactly as downloaded from Topin — all columns are kept, whatever the exam's subjects or sections.
+              The app finds the <strong>Student UID</strong>, Name, Mobile and Email columns automatically; check them in the preview and change any that are wrong. Only the UID column is required.
+            </div>
+
+            {!preview && status !== "uploading" && !(status && typeof status === "object") && (
+              <>
+                <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: "none" }}
+                  onChange={e => { if (e.target.files[0]) readFile(e.target.files[0]); e.target.value = ""; }} />
+                <div
+                  onClick={() => fileRef.current?.click()}
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) readFile(f); }}
+                  style={{ border: `2px dashed ${C.border}`, borderRadius: 10, padding: "32px 20px", textAlign: "center", cursor: "pointer", color: C.muted, fontSize: 13 }}
+                >
+                  <div style={{ fontWeight: 600, color: C.text, marginBottom: 4 }}>Drop the Topin results CSV here or click to browse</div>
+                  <div style={{ fontSize: 11 }}>Only .csv files are accepted</div>
+                </div>
+              </>
+            )}
+
+            {preview?.error && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 12, color: C.red }}>{preview.error}</div>
+                <div><Btn variant="secondary" onClick={() => setPreview(null)}>Choose Another File</Btn></div>
+              </div>
+            )}
+
+            {preview && !preview.error && status !== "uploading" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ fontSize: 12, color: C.muted }}>
+                  <strong style={{ color: C.text }}>{preview.fileName}</strong> · {preview.rows.length} rows · {preview.headers.length} columns ·{" "}
+                  <span style={{ color: C.green, fontWeight: 700 }}>{pv.unique} students</span>
+                  {pv.noUid > 0 && <> · <span style={{ color: C.red, fontWeight: 700 }}>{pv.noUid} rows without a UID</span> (kept in the file, not used for lookups)</>}
+                  {pv.dupes > 0 && <> · <span style={{ color: C.red, fontWeight: 700 }}>{pv.dupes} repeated UIDs</span> (the last row is used)</>}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+                  {["uid", "name", "phone", "email"].map(field => (
+                    <label key={field} style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
+                      {RESULTS_DIR_COL_LABELS[field]} column{field === "uid" ? " (required)" : ""}
+                      <select value={preview.cols[field]} onChange={e => setCol(field, Number(e.target.value))}
+                        style={{ ...inputS, borderColor: field === "uid" && preview.cols.uid < 0 ? C.red : C.border }}>
+                        <option value={-1}>{field === "uid" ? "— choose a column —" : "— none —"}</option>
+                        {preview.headers.map((h, i) => <option key={i} value={i}>{h || `(column ${i + 1})`}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                {preview.cols.uid < 0 ? (
+                  <div style={{ fontSize: 12, color: C.red }}>Couldn't find the Student UID column automatically — choose it above.</div>
+                ) : (
+                  <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, overflow: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr>{["uid", "name", "phone", "email"].map(f => <th key={f} style={thS}>{RESULTS_DIR_COL_LABELS[f]}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {preview.rows.slice(0, 5).map((r, i) => (
+                          <tr key={i}>
+                            {["uid", "name", "phone", "email"].map(f => (
+                              <td key={f} style={{ border: `1px solid ${C.border}`, padding: "6px 10px", color: preview.cols[f] >= 0 ? C.text : C.muted }}>
+                                {preview.cols[f] >= 0 ? (r[preview.cols[f]] || "—") : "—"}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 10.5, color: C.muted, padding: "6px 10px", background: C.surfaceAlt }}>First {Math.min(5, preview.rows.length)} rows — the full file (all {preview.headers.length} columns) is stored.</div>
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <Btn variant="secondary" onClick={() => setPreview(null)}>Choose Another File</Btn>
+                  <Btn onClick={upload} disabled={preview.cols.uid < 0 || pv.unique === 0}>Upload {pv.unique} students</Btn>
+                </div>
+              </div>
+            )}
+
+            {status === "uploading" && (
+              <div style={{ textAlign: "center", padding: "28px 0", color: C.muted, fontSize: 13 }}>
+                <div style={{ marginBottom: 8, fontWeight: 600, color: C.text }}>Uploading…</div>
+                Saving the results file, please wait.
+              </div>
+            )}
+
+            {status && typeof status === "object" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {status.failed ? (
+                  <div style={{ background: C.redLight, border: "1px solid #f0c0c8", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: C.red }}>Upload failed: {status.failed}</div>
+                ) : (
+                  <div style={{ background: "#dcfce7", border: "1px solid #86efac", borderRadius: 8, padding: "12px 16px", fontSize: 13 }}>
+                    <div style={{ fontWeight: 700, color: C.text, marginBottom: 6 }}>Upload complete</div>
+                    <div style={{ color: C.muted, lineHeight: 1.8 }}>
+                      <span style={{ color: C.green, fontWeight: 700 }}>{status.studentCount}</span> students saved
+                      {status.backfilled > 0 && <> · filled in missing details for <span style={{ color: C.blue, fontWeight: 700 }}>{status.backfilled}</span> eligible students</>}
+                    </div>
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <Btn variant="secondary" onClick={() => setStatus(null)}>Upload Another</Btn>
+                  <Btn onClick={() => { setShowUpload(false); setStatus(null); }}>Done</Btn>
+                </div>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {viewing && (
+        <Modal title={viewing.file.fileName || "Results file"} width={1200} onClose={() => setViewing(null)}>
+          {!viewing.rows ? (
+            <div style={{ textAlign: "center", padding: "28px 0", color: C.muted, fontSize: 13 }}>Loading…</div>
+          ) : viewing.error ? (
+            <div style={{ fontSize: 12, color: C.red }}>Couldn't load this file: {viewing.error}</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <input value={viewSearch} onChange={e => { setViewSearch(e.target.value); setViewPage(1); }} placeholder="Search any column (UID, name, score…)" style={{ ...inputS, width: 320 }} />
+                <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: C.muted }}>
+                  <span><strong style={{ color: C.text }}>{viewRows.length}</strong> {viewSearch.trim() ? "matching" : ""} rows</span>
+                  <Btn variant="secondary" size="sm" onClick={() => download(viewing.file)}>Download CSV</Btn>
+                </div>
+              </div>
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, overflow: "auto", maxHeight: "60vh" }}>
+                <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr>{(viewing.file.headers || []).map((h, i) => <th key={i} style={{ ...thS, position: "sticky", top: 0 }}>{h}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {viewRows.slice((viewPage - 1) * VIEW_PAGE_SIZE, viewPage * VIEW_PAGE_SIZE).map((r, i) => (
+                      <tr key={i}>
+                        {r.map((v, j) => <td key={j} style={{ border: `1px solid ${C.border}`, padding: "6px 10px", whiteSpace: "nowrap", background: i % 2 === 0 ? "#fff" : C.surfaceAlt }}>{v}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {viewTotalPages > 1 && (
+                <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
+                  <Btn variant="secondary" size="sm" onClick={() => setViewPage(p => Math.max(1, p - 1))} disabled={viewPage === 1}>Prev</Btn>
+                  <span style={{ fontSize: 12, color: C.muted, display: "flex", alignItems: "center", padding: "0 8px" }}>Page {viewPage} of {viewTotalPages}</span>
+                  <Btn variant="secondary" size="sm" onClick={() => setViewPage(p => Math.min(viewTotalPages, p + 1))} disabled={viewPage === viewTotalPages}>Next</Btn>
+                </div>
+              )}
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {confirm && (
+        <Modal title="Delete Results File" onClose={() => setConfirm(null)} width={460}>
+          <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
+            Delete <strong>{confirm.fileName}</strong> ({confirm.studentCount ?? 0} students), uploaded {fmtDateTimeShort(confirm.uploadedAt)}?<br /><br />
+            It stops being used to fill in student details straight away (details already filled into eligibility stay). You can restore it from <strong>Deleted</strong> for {ELIG_UPLOAD_RETENTION_DAYS} days; after that it's permanently deleted.
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirm(null)}>Cancel</Btn>
+            <Btn variant="danger" onClick={async () => {
+              try { await onDelete(confirm); } catch (err) { alert(`Delete failed: ${err.message || err}`); }
+              setConfirm(null);
+            }}>Delete</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // ─── Interview Eligibility ─────────────────────────────────────────────────────
 // Program POCs upload who was eligible for each interview template, so the Interviews Overview
 // can show a real funnel (eligible -> scheduled -> attempted -> cleared) instead of only counting
@@ -3868,7 +4341,7 @@ function parseEligibilityPreview(text, existingIds) {
   });
 }
 
-function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUploadPart, onRestoreEligibilityUploadPart, onPurgeEligibilityUploadParts, role }) {
+function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUploadPart, onRestoreEligibilityUploadPart, onPurgeEligibilityUploadParts, resultsFiles, onUploadResultsFile, onDeleteResultsFile, onRestoreResultsFile, onPurgeResultsFile, role }) {
   const [programTab, setProgramTab] = useState("eligibility");
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PAGE_SIZE = 10;
@@ -3908,7 +4381,10 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   // Online/Offline results tabs were removed from the UI on request (2026-10-15) — only Interview
   // Eligibility is shown. Their import/table code below is kept but unreachable; add them back here
   // to restore them.
-  const PROGRAMS = [{ id: "eligibility", label: "Interview Eligibility" }];
+  const PROGRAMS = [
+    { id: "eligibility", label: "Interview Eligibility" },
+    ...(can(role, "resultsDirectory.read") || can(role, "resultsDirectory.write") ? [{ id: "directory", label: "Results Directory" }] : []),
+  ];
   const isEligTab = programTab === "eligibility";
   useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); }, [programTab, eligTemplateFilter, eligSearch]);
 
@@ -3936,8 +4412,12 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
 
   const previewEligibilityCSV = async (file) => {
     try {
-      const rows = parseEligibilityPreview(await file.text(), new Set((eligibility || []).map(e => e.id)));
-      setEligPreview({ fileName: file.name, rows });
+      const parsed = parseEligibilityPreview(await file.text(), new Set((eligibility || []).map(e => e.id)));
+      setImportStatus("checking");
+      let lookup = null, lookupError = null;
+      try { lookup = await loadDirectoryLookup(resultsFiles); } catch (err) { console.error("results directory lookup failed:", err); lookupError = err.message || String(err); }
+      const rows = enrichEligibilityRows(parsed, lookup);
+      setEligPreview({ fileName: file.name, rows, lookupError });
       setEligPreviewErrorsOnly(false);
       setImportStatus("preview");
     } catch (err) {
@@ -3952,7 +4432,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     setImportStatus("importing");
     try {
       await onImportEligibility(
-        valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name, phone: r.phone, email: r.email, templateSlot: r.templateSlot, eligible: true } })),
+        valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name || "", phone: r.phone || "", email: r.email || "", templateSlot: r.templateSlot, eligible: true } })),
         { fileName: eligPreview.fileName },
       );
       const updated = valid.filter(r => r.action === "update").length;
@@ -3968,7 +4448,12 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   const exportEligibilityUpload = (u, slotKey) => {
     const rows = (u.rows || [])
       .filter(r => r.templateSlot === slotKey)
-      .map(r => [r.studentId, r.name, r.phone || "", r.email, slotLabel(r.templateSlot)]);
+      .map(r => {
+        // Details filled in later from the Results Directory live on the eligibility doc, not in
+        // this upload's snapshot — use them where the snapshot is blank.
+        const live = (eligibility || []).find(e => e.id === eligibilityDocId(r.studentId, r.templateSlot) && e.uploadId === u.id) || {};
+        return [r.studentId, r.name || live.name || "", r.phone || live.phone || "", r.email || live.email || "", slotLabel(r.templateSlot)];
+      });
     const part = slotKey ? `-${fileSlug(slotLabel(slotKey))}` : "";
     downloadRowsCsv(`interview-eligibility-upload-${(u.uploadedAt || "").slice(0, 10)}-${fileSlug(u.fileName || u.id)}${part}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
   };
@@ -4065,7 +4550,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               {sending ? "Sending…" : `Send to Interview (${selectedIds.size})`}
             </Btn>
           )}
-          {can(role, "results.write") && (
+          {isEligTab && can(role, "results.write") && (
             <>
               <button onClick={downloadTemplate} title="Download CSV template" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -4090,7 +4575,9 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         ))}
       </div>
 
-      {isEligTab ? (() => {
+      {programTab === "directory" ? (
+        <ResultsDirectoryTab files={resultsFiles || []} role={role} onUpload={onUploadResultsFile} onDelete={onDeleteResultsFile} onRestore={onRestoreResultsFile} onPurge={onPurgeResultsFile} />
+      ) : isEligTab ? (() => {
         const all = eligibility || [];
         const totalPages = Math.max(1, Math.ceil(tabResults.length / RESULTS_PAGE_SIZE));
         const pageRows = tabResults.slice((resultsPage - 1) * RESULTS_PAGE_SIZE, resultsPage * RESULTS_PAGE_SIZE);
@@ -4260,6 +4747,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                         <td style={cell}>
                           <div style={{ fontWeight: 700, color: C.text }}>{e.name || "—"}</div>
                           <div style={{ fontSize: 11, color: C.muted }}>{e.studentId}</div>
+                          {missingPiFields(e).length > 0 && <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: 2 }}>⚠️ Missing: {missingPiFields(e).join(", ")}</div>}
                         </td>
                         <td style={cell}>{slotLabel(e.templateSlot)}</td>
                         <td style={cell}>{e.importedAt ? fmtDate(e.importedAt.slice(0, 10)) : "—"}</td>
@@ -4444,6 +4932,9 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                       <span style={{ color: C.green, fontWeight: 700 }}>{validRows.filter(r => r.action === "new").length} new</span> ·{" "}
                       <span style={{ color: C.blue, fontWeight: 700 }}>{validRows.filter(r => r.action === "update").length} update</span> ·{" "}
                       <span style={{ color: errorRows.length ? C.red : C.muted, fontWeight: 700 }}>{errorRows.length} with errors</span>
+                      {validRows.some(r => r.detailsFrom === "directory" || r.detailsFrom === "mixed") && <> · {validRows.filter(r => r.detailsFrom === "directory" || r.detailsFrom === "mixed").length} filled from Results Directory</>}
+                      {validRows.some(r => r.missing?.length) && <> · <span style={{ color: C.yellow, fontWeight: 700 }}>{validRows.filter(r => r.missing?.length).length} missing details</span></>}
+                      {eligPreview.lookupError && <div style={{ color: C.red, marginTop: 4 }}>Couldn't check the Results Directory ({eligPreview.lookupError}) — details weren't filled in.</div>}
                     </div>
                     {errorRows.length > 0 && (
                       <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
@@ -4460,6 +4951,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                           <tr>
                             <th style={pth}>Row</th>
                             <th style={pth}>Student</th>
+                            <th style={pth}>Details</th>
                             <th style={pth}>Interview Template</th>
                             <th style={pth}>Check</th>
                           </tr>
@@ -4473,6 +4965,17 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                                 <td style={cell}>
                                   <div style={{ fontWeight: 700, color: C.text }}>{r.name || "—"}</div>
                                   <div style={{ fontSize: 11, color: C.muted }}>{r.studentId || "—"}</div>
+                                </td>
+                                <td style={cell}>
+                                  {r.action !== "error" && (<>
+                                    <div style={{ fontSize: 11 }}>{r.phone || "—"}</div>
+                                    <div style={{ fontSize: 11 }}>{r.email || "—"}</div>
+                                    <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                                      {r.detailsFrom === "csv" ? "From your CSV" : r.detailsFrom === "directory" ? `From Results Directory (${r.dirFile})` : r.detailsFrom === "mixed" ? `CSV + Results Directory (${r.dirFile})` : ""}
+                                    </div>
+                                    {r.missing?.length > 0 && <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: 2 }}>⚠️ Missing: {r.missing.join(", ")}</div>}
+                                    {r.mismatches?.map(m => <div key={m} style={{ fontSize: 11, color: C.red, marginTop: 2 }}>⚠️ {m}</div>)}
+                                  </>)}
                                 </td>
                                 <td style={cell}>{r.templateSlot ? slotLabel(r.templateSlot) : (r.rawTemplate || "—")}</td>
                                 <td style={cell}>
@@ -4496,6 +4999,13 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 </div>
               );
             })()}
+
+            {importStatus === "checking" && (
+              <div style={{ textAlign: "center", padding: "28px 0", color: C.muted, fontSize: 13 }}>
+                <div style={{ marginBottom: 8, fontWeight: 600, color: C.text }}>Checking…</div>
+                Looking up student details in the Results Directory.
+              </div>
+            )}
 
             {importStatus === "importing" && (
               <div style={{ textAlign: "center", padding: "28px 0", color: C.muted, fontSize: 13 }}>
@@ -7696,6 +8206,8 @@ const PERMISSION_ROWS = [
   { group: "Generation", action: "generate",      label: "Generate assessments" },
   { group: "Results",    action: "results.read",  label: "View Results tab" },
   { group: "Results",    action: "results.write", label: "Upload / delete interview eligibility" },
+  { group: "Results",    action: "resultsDirectory.read",  label: "View / download Results Directory files" },
+  { group: "Results",    action: "resultsDirectory.write", label: "Upload / delete Results Directory files" },
   { group: "Interviews", action: "interviews.read", label: "View Interviews tab" },
   { group: "Interviews", action: "interviews.sync", label: "Sync interviews from the Interview Coordinator App" },
   { group: "Interviews", action: "interviews.delete", label: "Delete an interview row" },
@@ -8089,6 +8601,7 @@ export default function App() {
   const [results, setResults] = useState([]);
   const [eligibility, setEligibility] = useState([]);
   const [eligibilityUploads, setEligibilityUploads] = useState([]);
+  const [resultsFiles, setResultsFiles] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [rolesList, setRolesList] = useState([]);
   const [livePerms, setLivePerms] = useState(PERMISSIONS);
@@ -8150,6 +8663,9 @@ export default function App() {
       ),
       onSnapshot(collection(db, "eligibilityUploads"), snap =>
         setEligibilityUploads(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      ),
+      onSnapshot(collection(db, "resultsFiles"), snap =>
+        setResultsFiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))
       ),
       onSnapshot(collection(db, "driveExpenses"), snap =>
         setExpenses(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -8424,6 +8940,53 @@ export default function App() {
     purge.forEach(sl => { patch[`deletedTemplates.${uploadPartKey(sl)}`] = deleteField(); });
     await updateDoc(ref, patch);
   };
+  // Chunks are written before the metadata doc, so the listener never shows a file whose rows
+  // aren't there yet. Afterwards, any eligible student still missing a Name / Mobile / Email gets
+  // the blanks filled from this file (existing values are never overwritten).
+  const onUploadResultsFile = async ({ fileName, headers, rows, cols }) => {
+    const pick = (r, i) => (i >= 0 ? (r[i] || "").trim() : "");
+    const students = rows.map(r => [pick(r, cols.uid), pick(r, cols.name), pick(r, cols.phone), pick(r, cols.email)]).filter(st => normUid(st[0]));
+    const rowChunks = chunkByBytes(rows);
+    const studentChunks = chunkByBytes(students);
+    const ref = doc(collection(db, "resultsFiles"));
+    for (let i = 0; i < rowChunks.length; i++) await setDoc(doc(db, "resultsFiles", ref.id, "rows", String(i)), { data: JSON.stringify(rowChunks[i]) });
+    for (let i = 0; i < studentChunks.length; i++) await setDoc(doc(db, "resultsFiles", ref.id, "students", String(i)), { data: JSON.stringify(studentChunks[i]) });
+    const byUid = new Map(students.map(st => [normUid(st[0]), st]));
+    const colName = (i) => (i >= 0 ? headers[i] : "");
+    await setDoc(ref, {
+      fileName, uploadedAt: new Date().toISOString(), uploadedBy: currentUser?.email || "",
+      headers, rowCount: rows.length, studentCount: byUid.size,
+      cols: { uid: colName(cols.uid), name: colName(cols.name), phone: colName(cols.phone), email: colName(cols.email) },
+      rowChunks: rowChunks.length, studentChunks: studentChunks.length,
+    });
+    const updates = [];
+    for (const e of eligibility) {
+      const st = byUid.get(normUid(e.studentId));
+      if (!st) continue;
+      const patch = {};
+      if (!(e.name || "").trim() && st[1]) patch.name = st[1];
+      if (!(e.phone || "").trim() && st[2]) patch.phone = st[2];
+      if (!(e.email || "").trim() && st[3]) patch.email = st[3];
+      if (Object.keys(patch).length) updates.push([e.id, patch]);
+    }
+    for (let i = 0; i < updates.length; i += 450) {
+      const batch = writeBatch(db);
+      updates.slice(i, i + 450).forEach(([id, patch]) => batch.update(doc(db, "interviewEligibility", id), patch));
+      await batch.commit();
+    }
+    return { studentCount: byUid.size, backfilled: updates.length };
+  };
+  const onDeleteResultsFile = async (f) => {
+    await updateDoc(doc(db, "resultsFiles", f.id), { deletedAt: new Date().toISOString(), deletedBy: currentUser?.email || "" });
+  };
+  const onRestoreResultsFile = async (f) => {
+    await updateDoc(doc(db, "resultsFiles", f.id), { deletedAt: null, deletedBy: null });
+  };
+  const onPurgeResultsFile = async (f) => {
+    for (let i = 0; i < (f.rowChunks || 0); i++) await deleteDoc(doc(db, "resultsFiles", f.id, "rows", String(i)));
+    for (let i = 0; i < (f.studentChunks || 0); i++) await deleteDoc(doc(db, "resultsFiles", f.id, "students", String(i)));
+    await deleteDoc(doc(db, "resultsFiles", f.id));
+  };
   const onSendToInterview = async (students) => {
     const idToken = await auth.currentUser.getIdToken();
     const res = await fetch("/api/send-to-interview", {
@@ -8588,7 +9151,7 @@ export default function App() {
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
-          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUploadPart={onDeleteEligibilityUploadPart} onRestoreEligibilityUploadPart={onRestoreEligibilityUploadPart} onPurgeEligibilityUploadParts={onPurgeEligibilityUploadParts} role={role} />}
+          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUploadPart={onDeleteEligibilityUploadPart} onRestoreEligibilityUploadPart={onRestoreEligibilityUploadPart} onPurgeEligibilityUploadParts={onPurgeEligibilityUploadParts} resultsFiles={resultsFiles} onUploadResultsFile={onUploadResultsFile} onDeleteResultsFile={onDeleteResultsFile} onRestoreResultsFile={onRestoreResultsFile} onPurgeResultsFile={onPurgeResultsFile} role={role} />}
           {page === "interviews" && <InterviewsPage role={role} eligibility={eligibility} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
