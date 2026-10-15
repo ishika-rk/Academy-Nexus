@@ -30,6 +30,9 @@ const usesBatchWeek = (type) => !NO_BATCH_WEEK_TYPES.includes(type);
 // Exam types that take a POC-entered Domain instead of a Week/Batch identifier — the
 // Exam Details table swaps its first two columns (Exam → Domain, W/B → Date) for these.
 const COMPETENCY_EXAM_TYPES = ["Competency Offline", "Competency Online"];
+// Starting Domain list for Competency exams, used until someone edits it via Manage Domains —
+// after that the shared list lives in settings/competencyDomains.
+const DEFAULT_COMPETENCY_DOMAINS = ["Problem Solving with DSA", "Frontend Engineering", "Software Engineering Fundamentals", "Backend Development", "Gen AI"];
 // Exam types with no defined Mock/Main tag convention yet — genTags returns "—" for both
 // rather than guessing a format. Add a real format to genTags (and drop the type from this
 // list) once one is actually defined.
@@ -1432,7 +1435,7 @@ function ExamTitleField({ value, onChange, existingCategories = [] }) {
   );
 }
 
-function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNotify, onCancelExam, uploads, onAddUpload, onDeleteUpload, role, notifications, onAddNotification, onMarkNotifRead, onMarkAllNotifsRead, currentUserEmail, expenses, onSaveExpense }) {
+function ExamDetailsPage({ competencyDomains, onSaveCompetencyDomains, exams, onSaveExam, onDeleteExam, onUndoDelete, onNotify, onCancelExam, uploads, onAddUpload, onDeleteUpload, role, notifications, onAddNotification, onMarkNotifRead, onMarkAllNotifsRead, currentUserEmail, expenses, onSaveExpense }) {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [originalForm, setOriginalForm] = useState(null);
@@ -1445,6 +1448,15 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
   const [confirmCancel, setConfirmCancel] = useState(null);
   const [expenseModalExam, setExpenseModalExam] = useState(null);
   const [programTab, setProgramTab] = useState("online");
+  const [showDomains, setShowDomains] = useState(false);
+  const [domainInput, setDomainInput] = useState("");
+  const [confirmDeleteDomain, setConfirmDeleteDomain] = useState(null);
+  const addDomain = () => {
+    const name = domainInput.trim();
+    if (!name) return;
+    if (!competencyDomains.some(d => d.toLowerCase() === name.toLowerCase())) onSaveCompetencyDomains([...competencyDomains, name]);
+    setDomainInput("");
+  };
   // Custom exam categories (anything the user typed into "Exam Category" that isn't one of the
   // fixed presets) get their own tab, derived live from whatever's actually been saved.
   const customCategoryIds = [...new Set(exams.map(e => getExamCategoryHead(e)).filter(id => id !== "online" && id !== "offline"))].sort();
@@ -1693,6 +1705,7 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
           })()}
           {can(role, "exam.write") && (
             <div style={{ display: 'flex', gap: 10 }}>
+              <Btn variant="secondary" size="lg" onClick={() => setShowDomains(true)}>Manage Domains</Btn>
               <Btn variant="secondary" size="lg" onClick={() => setShowImport(true)}>Import CSV</Btn>
               <Btn onClick={openNew} icon="+" size="lg">Add Exam</Btn>
             </div>
@@ -1712,6 +1725,45 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
       </div>
 
       {showImport && <ImportCSVModal onClose={() => setShowImport(false)} onImport={handleImportCSV} />}
+
+      {showDomains && (
+        <Modal title="Competency Domains" onClose={() => { setShowDomains(false); setDomainInput(""); }} width={460}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ fontSize: 13, color: C.muted }}>Shared list for Competency Online and Competency Offline exams. These appear in the Domain dropdown when adding or editing an exam.</div>
+            <div style={{ display: "flex", flexDirection: "column", border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+              {competencyDomains.length === 0 && <div style={{ padding: "10px 12px", fontSize: 13, color: C.muted, fontStyle: "italic" }}>No domains yet</div>}
+              {competencyDomains.map((d, i) => (
+                <div key={d} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", fontSize: 13, color: C.text, borderTop: i ? `1px solid ${C.border}` : "none" }}>
+                  <span>{d}</span>
+                  <button onClick={() => setConfirmDeleteDomain(d)} title="Remove domain" style={{ background: "none", border: "none", cursor: "pointer", color: C.red, padding: 4, display: "flex" }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={domainInput} onChange={e => setDomainInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addDomain(); }}
+                style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "9px 12px", fontSize: 13, color: C.text, fontFamily: "inherit", outline: "none" }} />
+              <Btn onClick={addDomain} disabled={!domainInput.trim()} icon="+">Add</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {confirmDeleteDomain && (
+        <Modal title="Remove Domain" onClose={() => setConfirmDeleteDomain(null)} width={420}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: C.text, marginBottom: 6 }}>{confirmDeleteDomain}</div>
+              <div style={{ fontSize: 13, color: C.muted }}>This removes it from the Domain dropdown. Exams already saved with this domain keep it.</div>
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDeleteDomain(null)}>Cancel</Btn>
+              <Btn variant="danger" onClick={() => { onSaveCompetencyDomains(competencyDomains.filter(d => d !== confirmDeleteDomain)); setConfirmDeleteDomain(null); }}>Remove</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* Status tabs — reset category filter when switching to offline since it has one type */}
       <div style={{ display: "flex", gap: 4, marginBottom: 14, background: C.surfaceAlt, borderRadius: 8, padding: 4, width: "fit-content", border: `1px solid ${C.border}` }}>
@@ -2601,7 +2653,10 @@ function ExamDetailsPage({ exams, onSaveExam, onDeleteExam, onUndoDelete, onNoti
               <Field label="Cycle Number" value={form.cycle} onChange={v => setForm({ ...form, cycle: v })} placeholder="e.g. 9" />
             )}
             {needsDomain && (
-              <Field label="Domain" value={form.domain} onChange={v => setForm({ ...form, domain: v })} placeholder="e.g. Frontend Development" />
+              // An exam saved before its domain was removed from the list still shows that domain as an option.
+              <Field label="Domain" value={form.domain} onChange={v => setForm({ ...form, domain: v })}
+                options={form.domain && !competencyDomains.includes(form.domain) ? [...competencyDomains, form.domain] : competencyDomains}
+                hint="Missing a domain? Add it via Manage Domains at the top of this page." />
             )}
 
             <Divider />
@@ -8674,6 +8729,7 @@ export default function App() {
   const [eligibilityUploads, setEligibilityUploads] = useState([]);
   const [resultsFiles, setResultsFiles] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [competencyDomains, setCompetencyDomains] = useState(DEFAULT_COMPETENCY_DOMAINS);
   const [rolesList, setRolesList] = useState([]);
   const [livePerms, setLivePerms] = useState(PERMISSIONS);
   const [notifications, setNotifications] = useState([]);
@@ -8749,6 +8805,9 @@ export default function App() {
       ),
       onSnapshot(collection(db, "accessRequests"), snap =>
         setAccessRequests(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt)))
+      ),
+      onSnapshot(doc(db, "settings", "competencyDomains"), snap =>
+        setCompetencyDomains(snap.exists() ? (snap.data().domains || []) : DEFAULT_COMPETENCY_DOMAINS)
       ),
       onSnapshot(doc(db, "settings", "permissions"), snap => {
         let data = snap.exists() ? snap.data() : PERMISSIONS;
@@ -8838,6 +8897,10 @@ export default function App() {
 
   const onDeleteUpload = async (id) => {
     await deleteDoc(doc(db, "uploads", id));
+  };
+
+  const onSaveCompetencyDomains = async (domains) => {
+    await setDoc(doc(db, "settings", "competencyDomains"), { domains });
   };
 
   const onDeleteExam = async (id) => {
@@ -9223,7 +9286,7 @@ export default function App() {
       {/* Main content */}
       <div style={{ marginLeft: 230, flex: 1, minWidth: 0 }}>
         <div style={{ padding: "32px 32px" }}>
-          {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
+          {page === "exams" && <ExamDetailsPage competencyDomains={competencyDomains} onSaveCompetencyDomains={onSaveCompetencyDomains} exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
           {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUploadPart={onDeleteEligibilityUploadPart} onRestoreEligibilityUploadPart={onRestoreEligibilityUploadPart} onPurgeEligibilityUploadParts={onPurgeEligibilityUploadParts} resultsFiles={resultsFiles} onUploadResultsFile={onUploadResultsFile} onUpdateResultsFile={onUpdateResultsFile} onDeleteResultsFile={onDeleteResultsFile} onRestoreResultsFile={onRestoreResultsFile} onPurgeResultsFile={onPurgeResultsFile} role={role} />}

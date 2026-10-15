@@ -40,6 +40,11 @@ service cloud.firestore {
       allow update, delete: if isSuperAdmin();
     }
 
+    // Shared Domain list for Competency exams (Exam Details → Manage Domains).
+    match /settings/competencyDomains {
+      allow read, write: if isSignedIn();
+    }
+
     // Internal app data — client-side role checks (can()) already gate the
     // UI for these; these rules just keep the database closed to the
     // public internet instead of wide open.
