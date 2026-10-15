@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, Fragment } from "react";
-import { db, auth, googleProvider, storage } from "./firebase";
+import { db, auth, storage } from "./firebase";
 import { collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, getDoc, query, orderBy, writeBatch, deleteField } from "firebase/firestore";
-import { onAuthStateChanged, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { onAuthStateChanged, signOut, sendPasswordResetEmail, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 
 // ─── Seed Data ────────────────────────────────────────────────────────────────
@@ -7945,34 +7945,7 @@ function TeamRolesPage({ rolesList, onSetRole, onRemoveRole, currentUserEmail, l
 }
 
 // ─── Login Page ───────────────────────────────────────────────────────────────
-// Shown on the "Access Not Assigned" screen — Google sign-in skips the Register form, so this is
-// how those users file their access request. The rules only let a user create their request, not
-// edit it, so the team has to be chosen up front.
-function RequestAccessForm({ onSubmit }) {
-  const [team, setTeam] = useState("poc");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const submit = async () => {
-    setBusy(true); setError("");
-    try { await onSubmit(team); }
-    catch (err) { setError(friendlyAuthError(err.code)); setBusy(false); }
-  };
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16, textAlign: "left" }}>
-      <label style={{ fontSize: 12, fontWeight: 600, color: C.muted }}>Team</label>
-      <select value={team} onChange={e => setTeam(e.target.value)} style={{ border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", fontSize: 13, fontFamily: "inherit", color: C.text, background: C.surface, outline: "none", cursor: "pointer" }}>
-        <option value="poc">POC Team</option>
-        <option value="admin">Admin</option>
-        <option value="content">Content Team</option>
-        <option value="interview_poc">Interview POC</option>
-      </select>
-      {error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>}
-      <Btn onClick={submit} disabled={busy}>{busy ? "Sending…" : "Request access"}</Btn>
-    </div>
-  );
-}
-
-function LoginPage({ onSignIn, onRegister, onGoogleSignIn }) {
+function LoginPage({ onSignIn, onRegister, onResetPassword }) {
   const [tab, setTab] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -7982,6 +7955,7 @@ function LoginPage({ onSignIn, onRegister, onGoogleSignIn }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   const handleSignIn = async (e) => {
     e.preventDefault();
@@ -8001,6 +7975,15 @@ function LoginPage({ onSignIn, onRegister, onGoogleSignIn }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Also how people who used to sign in with Google (no password on their account) set one.
+  const handleReset = async (e) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try { await onResetPassword(email.trim()); setResetSent(true); }
+    catch (err) { setError(friendlyAuthError(err.code)); }
+    finally { setLoading(false); }
   };
 
   const inputStyle = { width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 13, fontFamily: "inherit", outline: "none", color: C.text, background: C.surface, boxSizing: "border-box" };
@@ -8031,19 +8014,32 @@ function LoginPage({ onSignIn, onRegister, onGoogleSignIn }) {
         {tab === "signin" && (
           <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div><label style={labelStyle}>Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@nxtwave.tech" style={inputStyle} /></div>
-            <div><label style={labelStyle}>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••" style={inputStyle} /></div>
+            <div>
+              <label style={labelStyle}>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••" style={inputStyle} />
+              <button type="button" onClick={() => { setTab("reset"); setError(""); setResetSent(false); }} style={{ background: "none", border: "none", padding: 0, marginTop: 6, fontSize: 12, fontWeight: 600, color: C.accent, cursor: "pointer", fontFamily: "inherit" }}>Forgot / set password?</button>
+            </div>
             {error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>}
             <button type="submit" disabled={loading} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: loading ? 0.7 : 1, transition: "opacity 0.15s" }}>{loading ? "Signing in…" : "Sign In"}</button>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ flex: 1, height: 1, background: C.border }} />
-              <span style={{ fontSize: 11, fontWeight: 600, color: C.muted }}>or</span>
-              <div style={{ flex: 1, height: 1, background: C.border }} />
-            </div>
-            <button type="button" onClick={onGoogleSignIn} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#fff", border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "10px 20px", fontSize: 13, fontWeight: 700, color: C.text, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
-              <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-              Sign in with Google
-            </button>
           </form>
+        )}
+
+        {tab === "reset" && !resetSent && (
+          <form onSubmit={handleReset} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Enter your email and we'll send you a link to set a new password. Use this too if you used to sign in with Google.</div>
+            <div><label style={labelStyle}>Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@nxtwave.tech" style={inputStyle} /></div>
+            {error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>}
+            <button type="submit" disabled={loading} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: loading ? 0.7 : 1, transition: "opacity 0.15s" }}>{loading ? "Sending…" : "Send link"}</button>
+            <button type="button" onClick={() => { setTab("signin"); setError(""); }} style={{ background: "none", border: "none", fontSize: 12, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit" }}>Back to Sign In</button>
+          </form>
+        )}
+
+        {tab === "reset" && resetSent && (
+          <div style={{ textAlign: "center", padding: "8px 0" }}>
+            <div style={{ width: 52, height: 52, background: C.greenLight, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", color: C.green, fontSize: 22, fontWeight: 900 }}>✓</div>
+            <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 8 }}>Check your email</div>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>If <strong>{email.trim()}</strong> has an account, a link to set your password is on its way. Check spam too. Then sign in with the new password.</div>
+            <button onClick={() => { setTab("signin"); setResetSent(false); }} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 24px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Back to Sign In</button>
+          </div>
         )}
 
         {tab === "register" && !submitted && (
@@ -8119,7 +8115,6 @@ export default function App() {
     });
   }, []);
 
-  const handleSignIn = () => signInWithPopup(auth, googleProvider);
   const handleSignOut = () => signOut(auth);
   const handleEmailSignIn = async (email, password) => {
     try {
@@ -8516,7 +8511,7 @@ export default function App() {
   }
 
   if (!currentUser) {
-    return <LoginPage onSignIn={handleEmailSignIn} onRegister={handleRegister} onGoogleSignIn={handleSignIn} />;
+    return <LoginPage onSignIn={handleEmailSignIn} onRegister={handleRegister} onResetPassword={email => sendPasswordResetEmail(auth, email)} />;
   }
 
   if (!role) {
@@ -8545,8 +8540,7 @@ export default function App() {
             <>
               <div style={{ fontSize: 36, marginBottom: 18 }}>🔒</div>
               <div style={{ fontWeight: 800, fontSize: 18, color: C.text, marginBottom: 8 }}>Access Not Assigned</div>
-              <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6 }}>Your account <strong>{currentUser.email}</strong> has not been assigned a role yet. Pick your team to request access.</div>
-              <RequestAccessForm onSubmit={team => handleRegister(currentUser.displayName || currentUser.email, currentUser.email, team)} />
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 24, lineHeight: 1.6 }}>Your account <strong>{currentUser.email}</strong> has not been assigned a role yet. Sign out and use <strong>Register</strong> to request access.</div>
             </>
           )}
           <button onClick={handleSignOut} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit" }}>Sign out</button>
