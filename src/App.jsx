@@ -7760,7 +7760,7 @@ function TeamRolesPage({ rolesList, onSetRole, onRemoveRole, currentUserEmail, l
                 <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{req.name}</div>
                 <div style={{ fontSize: 12, color: C.muted, marginTop: 1 }}>{req.email}</div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                  Requested as: <strong>{ROLE_OPTIONS.find(o => o.value === req.team)?.label || req.team}</strong> · {timeAgo(req.requestedAt)}
+                  Requested as: <strong>{req.team ? (ROLE_OPTIONS.find(o => o.value === req.team)?.label || req.team) : "Not specified (Google sign-in)"}</strong> · {timeAgo(req.requestedAt)}
                 </div>
               </div>
               {approvingEmail === req.email ? (
@@ -8084,6 +8084,20 @@ export default function App() {
       try {
         const roleDoc = await getDoc(doc(db, "roles", firebaseUser.email));
         const role = roleDoc.exists() ? roleDoc.data().role : null;
+        // Google sign-in skips the Register form, so it never files an access request — the user
+        // would sit on "Access Not Assigned" invisible to admins. File one for them here instead.
+        // Only when none exists, so a rejected request isn't silently reopened.
+        if (!role) {
+          try {
+            const reqRef = doc(db, "accessRequests", firebaseUser.email);
+            const reqDoc = await getDoc(reqRef);
+            if (!reqDoc.exists()) {
+              await setDoc(reqRef, { name: firebaseUser.displayName || firebaseUser.email, email: firebaseUser.email, team: "", requestedAt: new Date().toISOString(), status: "pending" });
+            }
+          } catch (err) {
+            console.error("Failed to file access request for", firebaseUser.email, err);
+          }
+        }
         setCurrentUser({ email: firebaseUser.email, displayName: firebaseUser.displayName, photoURL: firebaseUser.photoURL, role });
       } catch (err) {
         console.error("Failed to load role for", firebaseUser.email, err);
@@ -8504,7 +8518,7 @@ export default function App() {
               <div style={{ width: 56, height: 56, background: C.yellowLight, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px", fontSize: 26 }}>⏳</div>
               <div style={{ fontWeight: 800, fontSize: 18, color: C.text, marginBottom: 8 }}>Awaiting Approval</div>
               <div style={{ fontSize: 13, color: C.muted, marginBottom: 6, lineHeight: 1.6 }}>
-                Hi <strong>{accessReq.name}</strong>, your request as <strong>{ROLE_OPTIONS.find(o => o.value === accessReq.team)?.label || accessReq.team}</strong> is pending.
+                Hi <strong>{accessReq.name}</strong>, your request{accessReq.team && <> as <strong>{ROLE_OPTIONS.find(o => o.value === accessReq.team)?.label || accessReq.team}</strong></>} is pending.
               </div>
               <div style={{ fontSize: 12, color: C.muted, marginBottom: 24 }}>An admin will review your request shortly. This page will update automatically once you're approved — no need to refresh.</div>
             </>
