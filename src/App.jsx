@@ -3948,9 +3948,13 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     }
   };
 
-  const exportEligibilityUpload = (u) => {
-    const rows = (u.rows || []).map(r => [r.studentId, r.name, r.phone || "", r.email, slotLabel(r.templateSlot)]);
-    downloadRowsCsv(`interview-eligibility-upload-${(u.uploadedAt || "").slice(0, 10)}-${fileSlug(u.fileName || u.id)}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
+  // slotKey given → just that template's students from the upload; omitted → the whole file.
+  const exportEligibilityUpload = (u, slotKey) => {
+    const rows = (u.rows || [])
+      .filter(r => !slotKey || r.templateSlot === slotKey)
+      .map(r => [r.studentId, r.name, r.phone || "", r.email, slotLabel(r.templateSlot)]);
+    const part = slotKey ? `-${fileSlug(slotLabel(slotKey))}` : "";
+    downloadRowsCsv(`interview-eligibility-upload-${(u.uploadedAt || "").slice(0, 10)}-${fileSlug(u.fileName || u.id)}${part}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
   };
 
   const importCSV = async (file) => {
@@ -4084,8 +4088,32 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
             ))}
           </div>
         );
+        // Template dropdown shared by both views (Students and Upload History).
+        const templateFilterSelect = (
+          <select value={eligTemplateFilter} onChange={e => setEligTemplateFilter(e.target.value)} style={{ ...inputS, width: 280 }}>
+            <option value="">All interview templates</option>
+            {INTERVIEW_STATS_SLOTS.map(sl => (
+              <option key={sl.slotKey} value={sl.slotKey}>{sl.label} ({all.filter(e => e.templateSlot === sl.slotKey && e.eligible !== false).length} eligible)</option>
+            ))}
+          </select>
+        );
         if (eligView === "uploads") {
           const canWrite = can(role, "results.write");
+          // One line per template inside each upload (a mixed-template file shows several), with
+          // the upload-level cells spanning them. With a template filter, only uploads containing
+          // it are listed and only its line is shown.
+          const templateParts = (u) => {
+            const counts = new Map();
+            for (const r of u.rows || []) counts.set(r.templateSlot, (counts.get(r.templateSlot) || 0) + 1);
+            if (counts.size === 0) (u.templateSlots || []).forEach(sl => counts.set(sl, null));
+            return [...counts.entries()]
+              .map(([slotKey, count]) => ({ slotKey, count }))
+              .filter(pt => !eligTemplateFilter || pt.slotKey === eligTemplateFilter)
+              .sort((a, b) => slotLabel(a.slotKey).localeCompare(slotLabel(b.slotKey)));
+          };
+          const filterUploads = (list) => list.map(u => ({ u, parts: templateParts(u) })).filter(x => x.parts.length > 0);
+          const shownActive = filterUploads(activeUploads);
+          const shownDeleted = filterUploads(deletedUploads);
           const uploadTable = (list, deleted) => (
             <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -4094,34 +4122,49 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                     <th style={thBase}>Uploaded On</th>
                     <th style={thBase}>File</th>
                     <th style={thBase}>Uploaded By</th>
-                    <th style={thBase}>Interview Templates</th>
-                    <th style={thBase}>Eligible Students</th>
                     {deleted && <th style={thBase}>Deleted</th>}
+                    <th style={thBase}>Interview Template</th>
+                    <th style={thBase}>Eligible Students</th>
+                    <th style={{ ...thBase, width: "1px" }} />
                     <th style={{ ...thBase, width: "1px" }} />
                   </tr>
                 </thead>
                 <tbody>
-                  {list.map((u, i) => {
+                  {list.map(({ u, parts }, i) => {
                     const cell = { verticalAlign: "middle", background: i % 2 === 0 ? "#fff" : C.surfaceAlt, border: `1px solid ${C.border}`, padding: "8px 12px", color: deleted ? C.muted : C.text };
+                    const span = parts.length;
                     const daysLeft = deleted ? Math.max(0, Math.ceil((Date.parse(u.deletedAt) + ELIG_UPLOAD_RETENTION_MS - Date.now()) / 86400000)) : 0;
-                    return (
-                      <tr key={u.id}>
-                        <td style={{ ...cell, whiteSpace: "nowrap" }}>{fmtDateTimeShort(u.uploadedAt)}</td>
-                        <td style={cell}>{u.fileName || "—"}</td>
-                        <td style={cell}>{u.uploadedBy || "—"}</td>
-                        <td style={cell}>{(u.templateSlots || []).map(slotLabel).join(", ") || "—"}</td>
-                        <td style={{ ...cell, whiteSpace: "nowrap" }}><strong>{u.eligibleCount ?? u.rowCount ?? 0}</strong> students</td>
-                        {deleted && (
-                          <td style={cell}>
-                            <div style={{ whiteSpace: "nowrap" }}>{fmtDateTimeShort(u.deletedAt)}</div>
-                            <div style={{ fontSize: 11 }}>by {u.deletedBy || "—"}</div>
-                            <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>{daysLeft} day{daysLeft === 1 ? "" : "s"} left</div>
+                    const mixed = (u.templateSlots || []).length > 1;
+                    return parts.map((pt, j) => (
+                      <tr key={`${u.id}:${pt.slotKey}`}>
+                        {j === 0 && (<>
+                          <td rowSpan={span} style={{ ...cell, whiteSpace: "nowrap" }}>{fmtDateTimeShort(u.uploadedAt)}</td>
+                          <td rowSpan={span} style={cell}>
+                            <div>{u.fileName || "—"}</div>
+                            {(u.templateSlots || []).length > 1 && (
+                              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                                {(u.templateSlots || []).length} templates · {u.eligibleCount ?? u.rowCount ?? 0} students{" "}
+                                <button onClick={() => exportEligibilityUpload(u)} style={{ background: "none", border: "none", padding: 0, color: C.blue, fontWeight: 600, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>· Download full file</button>
+                              </div>
+                            )}
                           </td>
-                        )}
+                          <td rowSpan={span} style={cell}>{u.uploadedBy || "—"}</td>
+                          {deleted && (
+                            <td rowSpan={span} style={cell}>
+                              <div style={{ whiteSpace: "nowrap" }}>{fmtDateTimeShort(u.deletedAt)}</div>
+                              <div style={{ fontSize: 11 }}>by {u.deletedBy || "—"}</div>
+                              <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>{daysLeft} day{daysLeft === 1 ? "" : "s"} left</div>
+                            </td>
+                          )}
+                        </>)}
+                        <td style={cell}>{slotLabel(pt.slotKey)}</td>
+                        <td style={{ ...cell, whiteSpace: "nowrap" }}>{pt.count === null ? "—" : <><strong>{pt.count}</strong> students</>}</td>
                         <td style={cell}>
-                          <div style={{ display: "flex", gap: 6 }}>
-                            <Btn variant="secondary" size="sm" onClick={() => exportEligibilityUpload(u)}>Download CSV</Btn>
-                            {canWrite && !deleted && <Btn variant="danger" size="sm" onClick={() => setConfirmDelete({ ...u, _kind: "upload" })}>Delete</Btn>}
+                          <Btn variant="secondary" size="sm" onClick={() => exportEligibilityUpload(u, pt.slotKey)}>Download CSV</Btn>
+                        </td>
+                        {j === 0 && (
+                          <td rowSpan={span} style={cell}>
+                            {canWrite && !deleted && <Btn variant="danger" size="sm" onClick={() => setConfirmDelete({ ...u, _kind: "upload" })}>{mixed ? "Delete file" : "Delete"}</Btn>}
                             {canWrite && deleted && (
                               <Btn size="sm" disabled={restoringId === u.id} onClick={async () => {
                                 setRestoringId(u.id);
@@ -4129,10 +4172,10 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                                 finally { setRestoringId(null); }
                               }}>{restoringId === u.id ? "Restoring…" : "Restore"}</Btn>
                             )}
-                          </div>
-                        </td>
+                          </td>
+                        )}
                       </tr>
-                    );
+                    ));
                   })}
                 </tbody>
               </table>
@@ -4140,16 +4183,24 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
           );
           return (<>
             {viewToggle}
-            {activeUploads.length === 0
-              ? <EmptyState icon="🗂️" title="No uploads yet" sub="Every eligibility CSV you upload is listed here with its date, and can be downloaded again." />
-              : uploadTable(activeUploads, false)}
-            {deletedUploads.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+              {templateFilterSelect}
+              <div style={{ fontSize: 12, color: C.muted }}>
+                <strong style={{ color: C.text }}>{shownActive.length}</strong> upload{shownActive.length === 1 ? "" : "s"}{eligTemplateFilter ? ` with ${slotLabel(eligTemplateFilter)}` : ""}
+              </div>
+            </div>
+            {shownActive.length === 0
+              ? (activeUploads.length === 0
+                  ? <EmptyState icon="🗂️" title="No uploads yet" sub="Every eligibility CSV you upload is listed here with its date, and can be downloaded again." />
+                  : <EmptyState icon="🔍" title="No uploads for this template" sub={`None of the uploads contain ${slotLabel(eligTemplateFilter)} students.`} />)
+              : uploadTable(shownActive, false)}
+            {shownDeleted.length > 0 && (
               <div style={{ marginTop: 24 }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>Deleted ({deletedUploads.length})</div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>Deleted ({shownDeleted.length})</div>
                 <div style={{ fontSize: 12, color: C.muted, margin: "2px 0 10px" }}>
                   Restorable for {ELIG_UPLOAD_RETENTION_DAYS} days after deletion, then permanently deleted. Restoring puts its students back on the eligibility list.
                 </div>
-                {uploadTable(deletedUploads, true)}
+                {uploadTable(shownDeleted, true)}
               </div>
             )}
           </>);
@@ -4165,12 +4216,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 <button onClick={() => setEligSearch("")} title="Clear search" style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 14, padding: 2 }}>✕</button>
               )}
             </div>
-            <select value={eligTemplateFilter} onChange={e => setEligTemplateFilter(e.target.value)} style={{ ...inputS, width: 280 }}>
-              <option value="">All interview templates</option>
-              {INTERVIEW_STATS_SLOTS.map(sl => (
-                <option key={sl.slotKey} value={sl.slotKey}>{sl.label} ({all.filter(e => e.templateSlot === sl.slotKey && e.eligible).length} eligible)</option>
-              ))}
-            </select>
+            {templateFilterSelect}
             </div>
             <div style={{ fontSize: 12, color: C.muted }}>
               <strong style={{ color: C.text }}>{tabResults.length}</strong> {eligSearch.trim() ? "matching" : "eligible"} students
@@ -4468,7 +4514,8 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
         <Modal title={confirmDelete._kind === "upload" ? "Delete Upload" : confirmDelete._kind === "eligibility" ? "Delete Eligibility" : "Delete Result"} onClose={() => setConfirmDelete(null)} width={460}>
           <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
             {confirmDelete._kind === "upload"
-              ? <>Delete the upload <strong>{confirmDelete.fileName || "—"}</strong> from {fmtDateTimeShort(confirmDelete.uploadedAt)} ({confirmDelete.eligibleCount ?? confirmDelete.rowCount ?? 0} students)?<br /><br />
+              ? <>Delete the upload <strong>{confirmDelete.fileName || "—"}</strong> from {fmtDateTimeShort(confirmDelete.uploadedAt)} ({confirmDelete.eligibleCount ?? confirmDelete.rowCount ?? 0} students{(confirmDelete.templateSlots || []).length > 1 ? ` across ${confirmDelete.templateSlots.map(slotLabel).join(", ")}` : ""})?<br /><br />
+                  {(confirmDelete.templateSlots || []).length > 1 && <>This deletes the whole file, all its templates together.<br /><br /></>}
                   Its students are removed from the eligibility list now — except anyone who's also in another upload. You can restore it from <strong>Upload History → Deleted</strong> for {ELIG_UPLOAD_RETENTION_DAYS} days; after that it's permanently deleted.</>
               : confirmDelete._kind === "eligibility"
               ? <>Delete <strong>{confirmDelete.name || confirmDelete.studentId}</strong>'s eligibility for {slotLabel(confirmDelete.templateSlot)}? This cannot be undone.</>
