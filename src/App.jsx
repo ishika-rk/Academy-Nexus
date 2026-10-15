@@ -402,8 +402,8 @@ function friendlyAuthError(code) {
     "auth/invalid-email": "Enter a valid email address.",
     "auth/user-not-found": "No account found with this email.",
     "auth/wrong-password": "Incorrect password.",
-    "auth/invalid-credential": "Incorrect email or password.",
-    "auth/email-already-in-use": "An account with this email already exists. Try signing in instead.",
+    "auth/invalid-credential": "Incorrect email or password. First time here? Create an account below.",
+    "auth/email-already-in-use": "An account with this email already exists. Sign in instead, or use Forgot password if you don't remember it.",
     "auth/weak-password": "Password must be at least 6 characters.",
     "auth/too-many-requests": "Too many attempts. Please try again later.",
     "auth/network-request-failed": "Network error. Check your connection and try again.",
@@ -7945,127 +7945,122 @@ function TeamRolesPage({ rolesList, onSetRole, onRemoveRole, currentUserEmail, l
 }
 
 // ─── Login Page ───────────────────────────────────────────────────────────────
+// Standard two-screen auth: "Welcome back" sign-in by default, with a clear "Create an account"
+// switch for first-timers. Registering creates the login (with the password they choose) and
+// files the access request in one step — they land straight on the Awaiting Approval screen.
 function LoginPage({ onSignIn, onRegister, onResetPassword }) {
-  const [tab, setTab] = useState("signin");
+  const [view, setView] = useState("signin"); // signin | register | reset
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [regEmail, setRegEmail] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [team, setTeam] = useState("poc");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [submitted, setSubmitted] = useState(false);
   const [resetSent, setResetSent] = useState(false);
 
-  const handleSignIn = async (e) => {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try { await onSignIn(email.trim(), password); }
-    catch (err) { setError(friendlyAuthError(err.code)); setLoading(false); }
-  };
+  const go = (v) => { setView(v); setError(""); setPassword(""); setConfirm(""); setResetSent(false); };
 
-  const handleRegister = async (e) => {
+  const run = async (e, fn) => {
     e.preventDefault();
     setError(""); setLoading(true);
-    try {
-      await onRegister(name.trim(), regEmail.trim().toLowerCase(), team);
-      setSubmitted(true);
-    } catch (err) {
-      setError(friendlyAuthError(err.code));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Also how people who used to sign in with Google (no password on their account) set one.
-  const handleReset = async (e) => {
-    e.preventDefault();
-    setError(""); setLoading(true);
-    try { await onResetPassword(email.trim()); setResetSent(true); }
-    catch (err) { setError(friendlyAuthError(err.code)); }
+    try { await fn(); }
+    catch (err) { setError(err.message && !err.code ? err.message : friendlyAuthError(err.code)); }
     finally { setLoading(false); }
   };
 
+  const handleSignIn = (e) => run(e, () => onSignIn(email.trim(), password));
+  const handleRegister = (e) => run(e, async () => {
+    if (password.length < 6) throw new Error("Password must be at least 6 characters.");
+    if (password !== confirm) throw new Error("Passwords don't match.");
+    await onRegister(name.trim(), email.trim().toLowerCase(), team, password);
+  });
+  // Also how people who used to sign in with Google (no password on their account) set one.
+  const handleReset = (e) => run(e, async () => { await onResetPassword(email.trim()); setResetSent(true); });
+
   const inputStyle = { width: "100%", border: `1.5px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", fontSize: 13, fontFamily: "inherit", outline: "none", color: C.text, background: C.surface, boxSizing: "border-box" };
   const labelStyle = { fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.8, textTransform: "uppercase", display: "block", marginBottom: 5 };
+  const primaryBtn = { background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: loading ? 0.7 : 1, transition: "opacity 0.15s" };
+  const linkBtn = { background: "none", border: "none", padding: 0, fontSize: 13, fontWeight: 700, color: C.accent, cursor: "pointer", fontFamily: "inherit" };
+  const errorBox = error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>;
+  const footer = (text, label, to) => (
+    <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.border}`, textAlign: "center", fontSize: 13, color: C.muted }}>
+      {text} <button type="button" onClick={() => go(to)} style={linkBtn}>{label}</button>
+    </div>
+  );
+
+  const heading = {
+    signin:   ["Welcome back", "Sign in to continue to Academy Nexus"],
+    register: ["Create your account", "First time here? Register and an admin will approve your access."],
+    reset:    ["Set a new password", "We'll email you a link. Use this too if you used to sign in with Google."],
+  }[view];
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "'Sora', 'Segoe UI', sans-serif", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: "40px 36px", width: "100%", maxWidth: 420, boxShadow: "0 4px 24px rgba(0,0,0,0.07)" }}>
-        <div style={{ textAlign: "center", marginBottom: 28 }}>
-          <div style={{ width: 48, height: 48, background: C.accent, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", fontWeight: 900, fontSize: 18, color: "#fff", letterSpacing: -0.5 }}>AN</div>
-          <div style={{ fontWeight: 900, fontSize: 20, color: C.text, marginBottom: 4 }}>Academy Nexus</div>
-          <div style={{ fontSize: 12, color: C.muted, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase" }}>Assessment Administration</div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: "36px 36px 28px", width: "100%", maxWidth: 420, boxShadow: "0 4px 24px rgba(0,0,0,0.07)" }}>
+        <div style={{ textAlign: "center", marginBottom: 26 }}>
+          <div style={{ width: 48, height: 48, background: C.accent, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", fontWeight: 900, fontSize: 18, color: "#fff", letterSpacing: -0.5 }}>AN</div>
+          <div style={{ fontWeight: 900, fontSize: 21, color: C.text, marginBottom: 6 }}>{heading[0]}</div>
+          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5 }}>{heading[1]}</div>
         </div>
 
-        <div style={{ display: "flex", background: C.surfaceAlt, borderRadius: 10, padding: 4, marginBottom: 24 }}>
-          {[["signin", "Sign In"], ["register", "Register"]].map(([id, label]) => (
-            <button key={id} onClick={() => { setTab(id); setError(""); setSubmitted(false); }} style={{
-              flex: 1, padding: "8px 0", borderRadius: 7, border: "none", fontFamily: "inherit",
-              fontWeight: 700, fontSize: 13, cursor: "pointer",
-              background: tab === id ? C.surface : "transparent",
-              color: tab === id ? C.text : C.muted,
-              boxShadow: tab === id ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-              transition: "all 0.15s",
-            }}>{label}</button>
-          ))}
-        </div>
-
-        {tab === "signin" && (
-          <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div><label style={labelStyle}>Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@nxtwave.tech" style={inputStyle} /></div>
-            <div>
-              <label style={labelStyle}>Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••" style={inputStyle} />
-              <button type="button" onClick={() => { setTab("reset"); setError(""); setResetSent(false); }} style={{ background: "none", border: "none", padding: 0, marginTop: 6, fontSize: 12, fontWeight: 600, color: C.accent, cursor: "pointer", fontFamily: "inherit" }}>Forgot / set password?</button>
-            </div>
-            {error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>}
-            <button type="submit" disabled={loading} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: loading ? 0.7 : 1, transition: "opacity 0.15s" }}>{loading ? "Signing in…" : "Sign In"}</button>
-          </form>
+        {view === "signin" && (
+          <>
+            <form onSubmit={handleSignIn} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div><label style={labelStyle}>Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" placeholder="you@nxtwave.tech" style={inputStyle} /></div>
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <label style={labelStyle}>Password</label>
+                  <button type="button" onClick={() => go("reset")} style={{ ...linkBtn, fontSize: 12, fontWeight: 600 }}>Forgot password?</button>
+                </div>
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" placeholder="••••••••" style={inputStyle} />
+              </div>
+              {errorBox}
+              <button type="submit" disabled={loading} style={primaryBtn}>{loading ? "Signing in…" : "Sign in"}</button>
+            </form>
+            {footer("New to Academy Nexus?", "Create an account", "register")}
+          </>
         )}
 
-        {tab === "reset" && !resetSent && (
-          <form onSubmit={handleReset} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>Enter your email and we'll send you a link to set a new password. Use this too if you used to sign in with Google.</div>
-            <div><label style={labelStyle}>Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@nxtwave.tech" style={inputStyle} /></div>
-            {error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>}
-            <button type="submit" disabled={loading} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: loading ? 0.7 : 1, transition: "opacity 0.15s" }}>{loading ? "Sending…" : "Send link"}</button>
-            <button type="button" onClick={() => { setTab("signin"); setError(""); }} style={{ background: "none", border: "none", fontSize: 12, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit" }}>Back to Sign In</button>
-          </form>
+        {view === "register" && (
+          <>
+            <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div><label style={labelStyle}>Full Name</label><input type="text" value={name} onChange={e => setName(e.target.value)} required autoComplete="name" placeholder="Your name" style={inputStyle} /></div>
+              <div><label style={labelStyle}>Work Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" placeholder="you@nxtwave.tech" style={inputStyle} /></div>
+              <div>
+                <label style={labelStyle}>Team</label>
+                <select value={team} onChange={e => setTeam(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
+                  <option value="poc">POC Team</option>
+                  <option value="admin">Admin</option>
+                  <option value="content">Content Team</option>
+                  <option value="interview_poc">Interview POC</option>
+                </select>
+              </div>
+              <div><label style={labelStyle}>Create Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="new-password" placeholder="At least 6 characters" style={inputStyle} /></div>
+              <div><label style={labelStyle}>Confirm Password</label><input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} required autoComplete="new-password" placeholder="Re-enter password" style={inputStyle} /></div>
+              {errorBox}
+              <button type="submit" disabled={loading} style={primaryBtn}>{loading ? "Creating account…" : "Create account & request access"}</button>
+            </form>
+            {footer("Already have an account?", "Sign in", "signin")}
+          </>
         )}
 
-        {tab === "reset" && resetSent && (
-          <div style={{ textAlign: "center", padding: "8px 0" }}>
+        {view === "reset" && !resetSent && (
+          <>
+            <form onSubmit={handleReset} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div><label style={labelStyle}>Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" placeholder="you@nxtwave.tech" style={inputStyle} /></div>
+              {errorBox}
+              <button type="submit" disabled={loading} style={primaryBtn}>{loading ? "Sending…" : "Send link"}</button>
+            </form>
+            {footer("Remembered it?", "Back to sign in", "signin")}
+          </>
+        )}
+
+        {view === "reset" && resetSent && (
+          <div style={{ textAlign: "center" }}>
             <div style={{ width: 52, height: 52, background: C.greenLight, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", color: C.green, fontSize: 22, fontWeight: 900 }}>✓</div>
-            <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 8 }}>Check your email</div>
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>If <strong>{email.trim()}</strong> has an account, a link to set your password is on its way. Check spam too. Then sign in with the new password.</div>
-            <button onClick={() => { setTab("signin"); setResetSent(false); }} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 24px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Back to Sign In</button>
-          </div>
-        )}
-
-        {tab === "register" && !submitted && (
-          <form onSubmit={handleRegister} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div><label style={labelStyle}>Full Name</label><input type="text" value={name} onChange={e => setName(e.target.value)} required placeholder="Your name" style={inputStyle} /></div>
-            <div><label style={labelStyle}>Email</label><input type="email" value={regEmail} onChange={e => setRegEmail(e.target.value)} required placeholder="you@nxtwave.tech" style={inputStyle} /></div>
-            <div>
-              <label style={labelStyle}>Team</label>
-              <select value={team} onChange={e => setTeam(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
-                <option value="poc">POC Team</option>
-                <option value="admin">Admin</option>
-                <option value="content">Content Team</option>
-                <option value="interview_poc">Interview POC</option>
-              </select>
-            </div>
-            {error && <div style={{ fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "8px 12px" }}>{error}</div>}
-            <button type="submit" disabled={loading} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "11px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: loading ? 0.7 : 1, transition: "opacity 0.15s" }}>{loading ? "Submitting…" : "Request Access"}</button>
-          </form>
-        )}
-
-        {tab === "register" && submitted && (
-          <div style={{ textAlign: "center", padding: "8px 0" }}>
-            <div style={{ width: 52, height: 52, background: C.greenLight, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", color: C.green, fontSize: 22, fontWeight: 900 }}>✓</div>
-            <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 8 }}>Request Submitted!</div>
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>Your request has been sent to the admin. Sign in now and wait on the next screen — you'll get access <strong>automatically</strong> the moment your request is approved.</div>
-            <button onClick={() => { setTab("signin"); setEmail(regEmail); setSubmitted(false); }} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 9, padding: "10px 24px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Sign In Now</button>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, marginBottom: 20 }}>If <strong>{email.trim()}</strong> has an account, a link to set your password is on its way. Check spam too, then sign in with the new password.</div>
+            <button onClick={() => go("signin")} style={{ ...primaryBtn, padding: "10px 24px", fontSize: 13 }}>Back to sign in</button>
           </div>
         )}
       </div>
@@ -8116,34 +8111,24 @@ export default function App() {
   }, []);
 
   const handleSignOut = () => signOut(auth);
-  const handleEmailSignIn = async (email, password) => {
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (err) {
-      if (err.code === "auth/invalid-credential" || err.code === "auth/user-not-found") {
-        // First sign-in after approval — create the Firebase Auth account
-        try {
-          const cred = await createUserWithEmailAndPassword(auth, email, password);
-          const reqDoc = await getDoc(doc(db, "accessRequests", email));
-          if (reqDoc.exists() && reqDoc.data().name) {
-            await updateProfile(cred.user, { displayName: reqDoc.data().name });
-          }
-        } catch (createErr) {
-          if (createErr.code === "auth/email-already-in-use") {
-            throw { code: "auth/invalid-credential" }; // account exists but wrong password
-          }
-          throw createErr;
-        }
-      } else {
-        throw err;
-      }
+  const handleEmailSignIn = (email, password) => signInWithEmailAndPassword(auth, email, password);
+  // Creates the login with the user's chosen password and files their access request. An
+  // earlier version filed the request without an account, so a request may already exist —
+  // the rules don't let a user overwrite it, so only create one if it's missing.
+  const handleRegister = async (name, email, team, password) => {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    await updateProfile(cred.user, { displayName: name });
+    const reqRef = doc(db, "accessRequests", email);
+    if (!(await getDoc(reqRef)).exists()) {
+      await setDoc(reqRef, { name, email, team, requestedAt: new Date().toISOString(), status: "pending" });
     }
   };
-  const handleRegister = async (name, email, team) => {
-    await setDoc(doc(db, "accessRequests", email), { name, email, team, requestedAt: new Date().toISOString(), status: "pending" });
-  };
 
+  // Keyed on the signed-in email: listeners opened while signed out are rejected by the security
+  // rules and never recover, so (re)subscribe once someone signs in or registers.
+  const signedInEmail = currentUser?.email;
   useEffect(() => {
+    if (!signedInEmail) return;
     const unsubs = [
       onSnapshot(collection(db, "exams"), snap =>
         setExams(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -8205,7 +8190,7 @@ export default function App() {
       }),
     ];
     return () => unsubs.forEach(u => u());
-  }, []);
+  }, [signedInEmail]);
 
   // When admin grants a role to a pending user who's already signed in, update currentUser without requiring a page reload
   useEffect(() => {
@@ -8540,7 +8525,7 @@ export default function App() {
             <>
               <div style={{ fontSize: 36, marginBottom: 18 }}>🔒</div>
               <div style={{ fontWeight: 800, fontSize: 18, color: C.text, marginBottom: 8 }}>Access Not Assigned</div>
-              <div style={{ fontSize: 13, color: C.muted, marginBottom: 24, lineHeight: 1.6 }}>Your account <strong>{currentUser.email}</strong> has not been assigned a role yet. Sign out and use <strong>Register</strong> to request access.</div>
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 24, lineHeight: 1.6 }}>Your account <strong>{currentUser.email}</strong> has not been assigned a role yet. Sign out and choose <strong>Create an account</strong> to request access.</div>
             </>
           )}
           <button onClick={handleSignOut} style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, color: C.muted, cursor: "pointer", fontFamily: "inherit" }}>Sign out</button>
