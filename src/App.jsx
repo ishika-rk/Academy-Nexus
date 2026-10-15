@@ -3847,7 +3847,7 @@ async function loadDirectoryLookup(files) {
       const prev = map.get(k) || {};
       map.set(k, {
         name: name || prev.name || "", phone: phone || prev.phone || "", email: email || prev.email || "",
-        fileName: f.fileName, uploadedAt: f.uploadedAt,
+        fileName: resultsFileLabel(f), uploadedAt: f.uploadedAt,
       });
     }
   }
@@ -3888,7 +3888,16 @@ function missingPiFields(e) {
   return ["name", "phone", "email"].filter(f => !(e[f] || "").trim()).map(f => PI_FIELD_LABELS[f]);
 }
 
-function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPurge }) {
+// How a results file is named everywhere it's shown — the exam it belongs to, not its file name
+// (Topin downloads don't say which exam they're from). Older files without exam info fall back
+// to the file name.
+function resultsFileLabel(f) {
+  if (!f) return "";
+  const name = (f.examName || "").trim() || f.fileName || "Results file";
+  return f.examDate ? `${name} · ${fmtDate(f.examDate)}` : name;
+}
+
+function ResultsDirectoryTab({ files, role, onUpload, onUpdate, onDelete, onRestore, onPurge }) {
   const canWrite = can(role, "resultsDirectory.write");
   const [showUpload, setShowUpload] = useState(false);
   const [preview, setPreview] = useState(null); // { fileName, headers, rows, cols } | { error }
@@ -3898,6 +3907,8 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
   const [viewPage, setViewPage] = useState(1);
   const [confirm, setConfirm] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [editing, setEditing] = useState(null); // { file, examName, examDate }
+  const [listSearch, setListSearch] = useState("");
   const fileRef = useRef(null);
   const purgeRequested = useRef(new Set());
   const VIEW_PAGE_SIZE = 50;
@@ -3914,7 +3925,11 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
     }
   }, [files, canWrite, onPurge]);
 
-  const sorted = [...(files || [])].sort((a, b) => (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
+  const q = listSearch.trim().toLowerCase();
+  const sorted = [...(files || [])]
+    .filter(f => !q || [f.examName, f.fileName, f.uploadedBy, f.examDate ? fmtDate(f.examDate) : ""].some(v => (v || "").toLowerCase().includes(q)))
+    .sort((a, b) => (b.examDate || "").localeCompare(a.examDate || "") || (b.uploadedAt || "").localeCompare(a.uploadedAt || ""));
+  const examNameSuggestions = [...new Set([...EXAM_TITLE_PRESETS, ...(files || []).map(f => (f.examName || "").trim()).filter(Boolean)])];
   const active = sorted.filter(f => !f.deletedAt);
   const deleted = sorted.filter(f => f.deletedAt);
 
@@ -3925,7 +3940,7 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
       if (all.length < 2) throw new Error("No rows found — the file needs a header row and at least one student.");
       const headers = all[0];
       const rows = all.slice(1).map(r => headers.map((_, i) => r[i] ?? ""));
-      setPreview({ fileName: file.name, headers, rows, cols: detectDirCols(headers) });
+      setPreview({ fileName: file.name, headers, rows, cols: detectDirCols(headers), examName: "", examDate: "" });
     } catch (err) {
       setPreview({ error: err.message || String(err) });
     }
@@ -3975,6 +3990,7 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr>
+            <th style={thS}>Exam</th>
             <th style={thS}>Uploaded On</th>
             <th style={thS}>File</th>
             <th style={thS}>Uploaded By</th>
@@ -3989,9 +4005,17 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
             const daysLeft = isDeleted ? Math.max(0, Math.ceil((Date.parse(f.deletedAt) + ELIG_UPLOAD_RETENTION_MS - Date.now()) / 86400000)) : 0;
             return (
               <tr key={f.id}>
+                <td style={cell}>
+                  {f.examName
+                    ? <>
+                        <div style={{ fontWeight: 800, color: isDeleted ? C.muted : C.text }}>{f.examName}</div>
+                        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{f.examDate ? fmtDate(f.examDate) : "Date not set"}</div>
+                      </>
+                    : <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>⚠️ Exam not set{canWrite && !isDeleted ? " — click Edit" : ""}</div>}
+                </td>
                 <td style={{ ...cell, whiteSpace: "nowrap" }}>{fmtDateTimeShort(f.uploadedAt)}</td>
                 <td style={cell}>
-                  <div style={{ fontWeight: 700 }}>{f.fileName || "—"}</div>
+                  <div>{f.fileName || "—"}</div>
                   <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{(f.headers || []).length} columns · {colSummary(f)}</div>
                 </td>
                 <td style={cell}>{f.uploadedBy || "—"}</td>
@@ -4006,6 +4030,7 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
                 <td style={cell}>
                   <div style={{ display: "flex", gap: 6 }}>
                     <Btn variant="secondary" size="sm" onClick={() => openView(f)}>View</Btn>
+                    {canWrite && !isDeleted && <Btn variant="secondary" size="sm" onClick={() => setEditing({ file: f, examName: f.examName || "", examDate: f.examDate || "" })}>Edit</Btn>}
                     <Btn variant="secondary" size="sm" disabled={busyId === `dl:${f.id}`} onClick={() => download(f)}>{busyId === `dl:${f.id}` ? "Preparing…" : "Download CSV"}</Btn>
                     {canWrite && !isDeleted && <Btn variant="danger" size="sm" onClick={() => setConfirm(f)}>Delete</Btn>}
                     {canWrite && isDeleted && (
@@ -4051,8 +4076,15 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
         </div>
         {canWrite && <Btn onClick={() => { setPreview(null); setStatus(null); setShowUpload(true); }}>Upload Results CSV</Btn>}
       </div>
+      {(files || []).length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search by exam name, date or file" style={{ ...inputS, width: 320, maxWidth: "100%" }} />
+        </div>
+      )}
 
-      {active.length === 0
+      {active.length === 0 && q
+        ? <EmptyState icon="🔍" title="No matching results files" sub={`Nothing matches "${listSearch.trim()}".`} />
+        : active.length === 0
         ? <EmptyState icon="📚" title="No results files yet" sub={canWrite ? "Upload a results CSV downloaded from Topin to get started." : "An admin uploads Topin results files here."} />
         : fileTable(active, false)}
 
@@ -4106,6 +4138,19 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
                   {pv.noUid > 0 && <> · <span style={{ color: C.red, fontWeight: 700 }}>{pv.noUid} rows without a UID</span> (kept in the file, not used for lookups)</>}
                   {pv.dupes > 0 && <> · <span style={{ color: C.red, fontWeight: 700 }}>{pv.dupes} repeated UIDs</span> (the last row is used)</>}
                 </div>
+                <datalist id="results-exam-names">{examNameSuggestions.map(n => <option key={n} value={n} />)}</datalist>
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
+                    Exam name (required)
+                    <input list="results-exam-names" value={preview.examName} onChange={e => setPreview(p => ({ ...p, examName: e.target.value }))}
+                      placeholder="e.g. Offline Placement Exam — Cycle 12" style={{ ...inputS, borderColor: preview.examName.trim() ? C.border : C.red }} />
+                  </label>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
+                    Exam date (required)
+                    <input type="date" value={preview.examDate} onChange={e => setPreview(p => ({ ...p, examDate: e.target.value }))}
+                      style={{ ...inputS, borderColor: preview.examDate ? C.border : C.red }} />
+                  </label>
+                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
                   {["uid", "name", "phone", "email"].map(field => (
                     <label key={field} style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
@@ -4143,7 +4188,7 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
                 )}
                 <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                   <Btn variant="secondary" onClick={() => setPreview(null)}>Choose Another File</Btn>
-                  <Btn onClick={upload} disabled={preview.cols.uid < 0 || pv.unique === 0}>Upload {pv.unique} students</Btn>
+                  <Btn onClick={upload} disabled={preview.cols.uid < 0 || pv.unique === 0 || !preview.examName.trim() || !preview.examDate}>Upload {pv.unique} students</Btn>
                 </div>
               </div>
             )}
@@ -4179,7 +4224,7 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
       )}
 
       {viewing && (
-        <Modal title={viewing.file.fileName || "Results file"} width={1200} onClose={() => setViewing(null)}>
+        <Modal title={resultsFileLabel(viewing.file)} width={1200} onClose={() => setViewing(null)}>
           {!viewing.rows ? (
             <div style={{ textAlign: "center", padding: "28px 0", color: C.muted, fontSize: 13 }}>Loading…</div>
           ) : viewing.error ? (
@@ -4219,10 +4264,36 @@ function ResultsDirectoryTab({ files, role, onUpload, onDelete, onRestore, onPur
         </Modal>
       )}
 
+      {editing && (
+        <Modal title="Edit Exam Details" onClose={() => setEditing(null)} width={480}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 12, color: C.muted }}>File: {editing.file.fileName}</div>
+            <datalist id="results-exam-names-edit">{examNameSuggestions.map(n => <option key={n} value={n} />)}</datalist>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
+              Exam name
+              <input list="results-exam-names-edit" value={editing.examName} onChange={e => setEditing(ed => ({ ...ed, examName: e.target.value }))} style={inputS} />
+            </label>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.muted, display: "flex", flexDirection: "column", gap: 4 }}>
+              Exam date
+              <input type="date" value={editing.examDate} onChange={e => setEditing(ed => ({ ...ed, examDate: e.target.value }))} style={inputS} />
+            </label>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setEditing(null)}>Cancel</Btn>
+              <Btn disabled={!editing.examName.trim() || !editing.examDate || busyId === "edit"} onClick={async () => {
+                setBusyId("edit");
+                try { await onUpdate(editing.file, { examName: editing.examName.trim(), examDate: editing.examDate }); setEditing(null); }
+                catch (err) { alert(`Save failed: ${err.message || err}`); }
+                finally { setBusyId(null); }
+              }}>{busyId === "edit" ? "Saving…" : "Save"}</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {confirm && (
         <Modal title="Delete Results File" onClose={() => setConfirm(null)} width={460}>
           <div style={{ fontSize: 13, color: C.text, marginBottom: 20, lineHeight: 1.6 }}>
-            Delete <strong>{confirm.fileName}</strong> ({confirm.studentCount ?? 0} students), uploaded {fmtDateTimeShort(confirm.uploadedAt)}?<br /><br />
+            Delete <strong>{resultsFileLabel(confirm)}</strong> ({confirm.studentCount ?? 0} students, file {confirm.fileName}), uploaded {fmtDateTimeShort(confirm.uploadedAt)}?<br /><br />
             It stops being used to fill in student details straight away (details already filled into eligibility stay). You can restore it from <strong>Deleted</strong> for {ELIG_UPLOAD_RETENTION_DAYS} days; after that it's permanently deleted.
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -4341,7 +4412,7 @@ function parseEligibilityPreview(text, existingIds) {
   });
 }
 
-function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUploadPart, onRestoreEligibilityUploadPart, onPurgeEligibilityUploadParts, resultsFiles, onUploadResultsFile, onDeleteResultsFile, onRestoreResultsFile, onPurgeResultsFile, role }) {
+function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUploadPart, onRestoreEligibilityUploadPart, onPurgeEligibilityUploadParts, resultsFiles, onUploadResultsFile, onUpdateResultsFile, onDeleteResultsFile, onRestoreResultsFile, onPurgeResultsFile, role }) {
   const [programTab, setProgramTab] = useState("eligibility");
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PAGE_SIZE = 10;
@@ -4576,7 +4647,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
       </div>
 
       {programTab === "directory" ? (
-        <ResultsDirectoryTab files={resultsFiles || []} role={role} onUpload={onUploadResultsFile} onDelete={onDeleteResultsFile} onRestore={onRestoreResultsFile} onPurge={onPurgeResultsFile} />
+        <ResultsDirectoryTab files={resultsFiles || []} role={role} onUpload={onUploadResultsFile} onUpdate={onUpdateResultsFile} onDelete={onDeleteResultsFile} onRestore={onRestoreResultsFile} onPurge={onPurgeResultsFile} />
       ) : isEligTab ? (() => {
         const all = eligibility || [];
         const totalPages = Math.max(1, Math.ceil(tabResults.length / RESULTS_PAGE_SIZE));
@@ -8943,7 +9014,7 @@ export default function App() {
   // Chunks are written before the metadata doc, so the listener never shows a file whose rows
   // aren't there yet. Afterwards, any eligible student still missing a Name / Mobile / Email gets
   // the blanks filled from this file (existing values are never overwritten).
-  const onUploadResultsFile = async ({ fileName, headers, rows, cols }) => {
+  const onUploadResultsFile = async ({ fileName, headers, rows, cols, examName, examDate }) => {
     const pick = (r, i) => (i >= 0 ? (r[i] || "").trim() : "");
     const students = rows.map(r => [pick(r, cols.uid), pick(r, cols.name), pick(r, cols.phone), pick(r, cols.email)]).filter(st => normUid(st[0]));
     const rowChunks = chunkByBytes(rows);
@@ -8954,7 +9025,8 @@ export default function App() {
     const byUid = new Map(students.map(st => [normUid(st[0]), st]));
     const colName = (i) => (i >= 0 ? headers[i] : "");
     await setDoc(ref, {
-      fileName, uploadedAt: new Date().toISOString(), uploadedBy: currentUser?.email || "",
+      fileName, examName: (examName || "").trim(), examDate: examDate || "",
+      uploadedAt: new Date().toISOString(), uploadedBy: currentUser?.email || "",
       headers, rowCount: rows.length, studentCount: byUid.size,
       cols: { uid: colName(cols.uid), name: colName(cols.name), phone: colName(cols.phone), email: colName(cols.email) },
       rowChunks: rowChunks.length, studentChunks: studentChunks.length,
@@ -8975,6 +9047,9 @@ export default function App() {
       await batch.commit();
     }
     return { studentCount: byUid.size, backfilled: updates.length };
+  };
+  const onUpdateResultsFile = async (f, patch) => {
+    await updateDoc(doc(db, "resultsFiles", f.id), patch);
   };
   const onDeleteResultsFile = async (f) => {
     await updateDoc(doc(db, "resultsFiles", f.id), { deletedAt: new Date().toISOString(), deletedBy: currentUser?.email || "" });
@@ -9151,7 +9226,7 @@ export default function App() {
           {page === "exams" && <ExamDetailsPage exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
-          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUploadPart={onDeleteEligibilityUploadPart} onRestoreEligibilityUploadPart={onRestoreEligibilityUploadPart} onPurgeEligibilityUploadParts={onPurgeEligibilityUploadParts} resultsFiles={resultsFiles} onUploadResultsFile={onUploadResultsFile} onDeleteResultsFile={onDeleteResultsFile} onRestoreResultsFile={onRestoreResultsFile} onPurgeResultsFile={onPurgeResultsFile} role={role} />}
+          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUploadPart={onDeleteEligibilityUploadPart} onRestoreEligibilityUploadPart={onRestoreEligibilityUploadPart} onPurgeEligibilityUploadParts={onPurgeEligibilityUploadParts} resultsFiles={resultsFiles} onUploadResultsFile={onUploadResultsFile} onUpdateResultsFile={onUpdateResultsFile} onDeleteResultsFile={onDeleteResultsFile} onRestoreResultsFile={onRestoreResultsFile} onPurgeResultsFile={onPurgeResultsFile} role={role} />}
           {page === "interviews" && <InterviewsPage role={role} eligibility={eligibility} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
