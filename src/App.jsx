@@ -6646,9 +6646,13 @@ const isPartialStatus = (status) => /partial/i.test(status || "");
 // clearance/verdict/level rule lives here.
 // UIDs are compared ignoring case, spaces and invisible characters (non-breaking/zero-width
 // spaces, BOMs) — these sneak in when UIDs are copied through spreadsheets and made identical-
-// looking UIDs fail to match.
+// looking UIDs fail to match. Student UIDs are UUIDs, so when one is present only that part is
+// compared: the Interview App has been seen storing the name glued on after it
+// ("625d73ef-… Pavan Kumar", 2026-10-15), which would otherwise never match.
 function normUid(v) {
-  return String(v || "").replace(/[\s\u00A0\u200B-\u200D\uFEFF]/g, "").toLowerCase();
+  const raw = String(v || "");
+  const uuid = raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  return (uuid ? uuid[0] : raw).replace(/[\s\u00A0\u200B-\u200D\uFEFF]/g, "").toLowerCase();
 }
 
 function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
