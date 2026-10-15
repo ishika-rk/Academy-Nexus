@@ -3964,10 +3964,10 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     }
   };
 
-  // slotKey given → just that template's students from the upload; omitted → the whole file.
+  // Downloads one template's students from an upload.
   const exportEligibilityUpload = (u, slotKey) => {
     const rows = (u.rows || [])
-      .filter(r => !slotKey || r.templateSlot === slotKey)
+      .filter(r => r.templateSlot === slotKey)
       .map(r => [r.studentId, r.name, r.phone || "", r.email, slotLabel(r.templateSlot)]);
     const part = slotKey ? `-${fileSlug(slotLabel(slotKey))}` : "";
     downloadRowsCsv(`interview-eligibility-upload-${(u.uploadedAt || "").slice(0, 10)}-${fileSlug(u.fileName || u.id)}${part}.csv`, [ELIGIBILITY_CSV_HEADERS, ...rows]);
@@ -4160,8 +4160,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                               <div>{u.fileName || "—"}</div>
                               {allSlots.length > 1 && (
                                 <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                                  {allSlots.length} templates in this file{" "}
-                                  <button onClick={() => exportEligibilityUpload(u)} style={{ background: "none", border: "none", padding: 0, color: C.blue, fontWeight: 600, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>· Download full file</button>
+                                  {allSlots.length} templates in this file
                                 </div>
                               )}
                             </td>
