@@ -7348,7 +7348,8 @@ const isPartialStatus = (status) => /partial/i.test(status || "");
 // - Attempted: has at least one completed or partially completed interview (no-show/cancelled
 //   don't count). Clearance/Verdict/Levels use their latest Cleared/Not Cleared attempt.
 // - Partially Completed: attempted, but only ever partially (no fully completed interview).
-// - No-Show / Cancelled: never attempted, and their latest interview has that status.
+// - Scheduled / No-Show / Cancelled: never attempted, and their latest interview has that status
+//   (Scheduled = booked but not happened yet: scheduled or pending_acceptance).
 // - Pending: eligible minus attempted (so it includes no-shows, cancellations and not-yet-scheduled).
 // When eligibility has been uploaded for the template (Results → Interview Eligibility), counts are
 // restricted to eligible students and anyone interviewed without being on the list is counted
@@ -7385,7 +7386,7 @@ function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
   const funnel = [...byStudent.entries()].filter(([uid]) => !hasEligibility || eligibleIds.has(uid));
 
   const latest = (list) => list.reduce((best, a) => (a.at > best.at ? a : best));
-  let attempted = 0, partial = 0, noShow = 0, cancelled = 0;
+  let attempted = 0, partial = 0, scheduled = 0, noShow = 0, cancelled = 0;
   const latestRows = [];
   for (const [, attempts] of funnel) {
     const full = attempts.filter(a => a.iv.status === "completed");
@@ -7394,6 +7395,7 @@ function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
       const last = latest(attempts).iv.status;
       if (last === "no_show") noShow++;
       else if (last === "cancelled") cancelled++;
+      else if (last === "scheduled" || last === "pending_acceptance") scheduled++;
       continue;
     }
     attempted++;
@@ -7408,6 +7410,7 @@ function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
     partial,
     noShow,
     cancelled,
+    scheduled,
     pending: hasEligibility ? eligibleIds.size - attempted : null,
     notOnList: hasEligibility ? byStudent.size - funnel.length : 0,
     // Details for the "not on list" popup. possibleMatch = someone on this template's eligibility
@@ -7528,6 +7531,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                 <th style={thStyle}>Clearance</th>
                 <th style={thStyle}>Verdict Band</th>
                 <th style={thStyle}>Levels</th>
+                <th style={thStyle}>Scheduled</th>
                 <th style={thStyle}>Cancelled</th>
                 <th style={thStyle}>No-Show</th>
                 <th style={thStyle}>Partially Completed</th>
@@ -7575,6 +7579,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                     </td>
                     <td style={tdStyle}>{verdictSegments.length === 0 ? <span style={{ color: C.muted }}>—</span> : <StackedBar segments={verdictSegments} />}</td>
                     <td style={tdStyle}>{levelSegments.length === 0 ? <span style={{ color: C.muted }}>—</span> : <StackedBar segments={levelSegments} />}</td>
+                    <td style={tdStyle}>{plain(stats.scheduled)}</td>
                     <td style={tdStyle}>{plain(stats.cancelled)}</td>
                     <td style={tdStyle}>{plain(stats.noShow)}</td>
                     <td style={tdStyle}>{plain(stats.partial)}</td>
@@ -7590,7 +7595,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
           </table>
         </div>
         <div style={{ fontSize: 10.5, color: C.muted, padding: "8px 14px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
-          All counts are unique students (matched by Student UID). Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted. Attempted = completed or partially completed at least one interview (no-show/cancelled don't count); Clearance, Verdict Band and Levels use each student's latest decided attempt. Cancelled / No-Show = never attempted, latest interview has that status. Partially Completed = attempted, but never fully completed. Pending = Eligible − Attempted.
+          All counts are unique students (matched by Student UID). Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted. Attempted = completed or partially completed at least one interview (no-show/cancelled don't count); Clearance, Verdict Band and Levels use each student's latest decided attempt. Scheduled / Cancelled / No-Show = never attempted, latest interview has that status (Scheduled = booked, not happened yet). Partially Completed = attempted, but never fully completed. Pending = Eligible − Attempted.
         </div>
       </div>
       {notOnListView && (
