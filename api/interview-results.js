@@ -68,6 +68,9 @@ const TEMPLATES = {
     toResult: (iv) => {
       const domains = iv.domains || {};
       return {
+        // Our interviews/{id} doc id, which is the Interview Coordinator App's own interview id
+        // (both sync paths key on it) — stable, so callers can tell a student's sittings apart.
+        interviewId: iv.id,
         candidateId: (iv.candidateUid || "").trim() || iv.id,
         candidateName: (iv.candidateName || "").trim(),
         interviewDate: iv.scheduledDate || "",
