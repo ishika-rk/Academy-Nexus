@@ -8,7 +8,7 @@ import { requireApiKey } from "./_lib/auth.js";
 //
 // Auth: header  x-api-key: <STUDENT_PORTAL_API_KEY>
 //
-// GET /api/interview-results?template=irp-l1[&email=<candidateEmail>][&limit=100][&cursor=<nextCursor>]
+// GET /api/interview-results?template=irp-l1[&candidateId=<Academy UID>][&email=<candidateEmail>][&limit=100][&cursor=<nextCursor>]
 //
 // Response:
 // { "template": "irp-l1", "count": 2, "nextCursor": "<string>" | null, "results": [{ ... }] }
@@ -39,6 +39,7 @@ const TEMPLATES = {
     collection: "interviews",
     templateName: "IRP L1 Human Interview",
     emailField: "candidateEmail",
+    candidateIdField: "candidateUid",
     // Domain keys confirmed against a real IRP L1 submission, 2026-09-29 — see
     // fillIrpL1RubricColumns / IRP_L1_DOMAIN_KEY_OVERRIDES in src/App.jsx.
     toResult: (iv) => {
@@ -75,7 +76,7 @@ export default async function handler(req, res) {
     return res.status(err.statusCode || 401).json({ error: err.message });
   }
 
-  const { template, email, cursor } = req.query || {};
+  const { template, candidateId, email, cursor } = req.query || {};
   const def = Object.hasOwn(TEMPLATES, template) ? TEMPLATES[template] : null;
   if (!def) {
     return res.status(400).json({
@@ -90,6 +91,7 @@ export default async function handler(req, res) {
 
   try {
     let queryRef = adminDb.collection(def.collection).where("templateName", "==", def.templateName);
+    if (candidateId) queryRef = queryRef.where(def.candidateIdField, "==", String(candidateId).trim());
     if (email) queryRef = queryRef.where(def.emailField, "==", String(email).trim());
     // Ordered by doc id so the cursor (the last doc id of the previous page) is stable no matter
     // how often a result's fields get updated between page requests.
