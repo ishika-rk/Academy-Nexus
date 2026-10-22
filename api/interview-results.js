@@ -24,6 +24,29 @@ function round2(raw) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
+// Lookup values arrive however the caller's system holds them — often copied through a
+// spreadsheet, which can add spaces or invisible characters (non-breaking/zero-width spaces,
+// BOMs) anywhere in the string. Neither a UID nor an email can legitimately contain any of
+// these, so all of them are stripped, not just the ends.
+const INVISIBLE_OR_SPACE = /[\s\u00A0\u200B-\u200D\uFEFF]/g;
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+// Stored candidateUid values are lowercase UUIDs (checked across every IRP L1 doc, 2026-10-22),
+// so only the UUID part is kept and lowercased — same idea as normUid in src/App.jsx.
+function cleanUid(v) {
+  const raw = String(v).replace(INVISIBLE_OR_SPACE, "");
+  const m = raw.match(UUID_RE);
+  return m ? m[0].toLowerCase() : raw;
+}
+
+// Firestore matching is case-sensitive and stored emails aren't normalized, so both the value as
+// sent and its lowercase form are tried. An email stored with different casing or stray spaces
+// still won't match — that needs a normalized copy saved at sync time.
+function emailVariants(v) {
+  const raw = String(v).replace(INVISIBLE_OR_SPACE, "");
+  return [...new Set([raw, raw.toLowerCase()])];
+}
+
 // Same rule as irpL1ClearanceStatus in src/App.jsx — keep the two in sync.
 function irpL1ClearanceStatus(iv) {
   if (iv.status !== "completed") return iv.status || "";
@@ -91,8 +114,8 @@ export default async function handler(req, res) {
 
   try {
     let queryRef = adminDb.collection(def.collection).where("templateName", "==", def.templateName);
-    if (candidateId) queryRef = queryRef.where(def.candidateIdField, "==", String(candidateId).trim());
-    if (email) queryRef = queryRef.where(def.emailField, "==", String(email).trim());
+    if (candidateId) queryRef = queryRef.where(def.candidateIdField, "==", cleanUid(candidateId));
+    if (email) queryRef = queryRef.where(def.emailField, "in", emailVariants(email));
     // Ordered by doc id so the cursor (the last doc id of the previous page) is stable no matter
     // how often a result's fields get updated between page requests.
     queryRef = queryRef.orderBy("__name__").limit(limit + 1);
