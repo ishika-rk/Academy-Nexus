@@ -7842,9 +7842,13 @@ function InterviewsPage({ role, eligibility }) {
         <div style={{ marginBottom: 16, fontSize: 12, color: C.red, background: C.redLight, border: "1px solid #fca5a5", borderRadius: 7, padding: "10px 14px" }}>{syncBannerError}</div>
       )}
 
-      <div style={{ display: "flex", gap: 2, marginBottom: activeBucket.subheaders.length ? 12 : 24, borderBottom: `2px solid ${C.border}` }}>
+      {/* Tabs share the row and shrink from 140px rather than holding a fixed width — with ten
+          buckets a fixed width overflowed the page and made the whole page scroll sideways. The bar
+          itself scrolls only if the window is too narrow even for the shrunk tabs; its bottom line is
+          an inset shadow, since a scrolling container would clip the old -2px-overlap underline. */}
+      <div style={{ display: "flex", gap: 2, marginBottom: activeBucket.subheaders.length ? 12 : 24, boxShadow: `inset 0 -2px 0 ${C.border}`, overflowX: "auto" }}>
         {INTERVIEW_BUCKETS.map(b => (
-          <button key={b.id} onClick={() => selectBucket(b.id)} style={{ background: "none", border: "none", borderBottom: `2px solid ${bucketTab === b.id ? C.accent : "transparent"}`, marginBottom: -2, padding: "8px 14px", width: 140, flexShrink: 0, whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", textAlign: "center", lineHeight: 1.3, fontSize: 13, fontWeight: 700, cursor: "pointer", color: bucketTab === b.id ? C.accent : C.muted, fontFamily: "inherit", transition: "all 0.15s" }}>{b.label}</button>
+          <button key={b.id} onClick={() => selectBucket(b.id)} style={{ background: "none", border: "none", borderBottom: `2px solid ${bucketTab === b.id ? C.accent : "transparent"}`, padding: "8px 6px", flex: "0 1 140px", minWidth: 104, whiteSpace: "normal", wordBreak: "keep-all", overflowWrap: "normal", textAlign: "center", lineHeight: 1.3, fontSize: 13, fontWeight: 700, cursor: "pointer", color: bucketTab === b.id ? C.accent : C.muted, fontFamily: "inherit", transition: "all 0.15s" }}>{b.label}</button>
         ))}
       </div>
 
