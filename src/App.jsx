@@ -5657,6 +5657,7 @@ const INTERVIEW_BUCKETS = [
   { id: "SWE", label: "Software Engineering Fundamentals", subheaders: [] },
   { id: "BACKEND", label: "Backend Development", subheaders: [] },
   { id: "IRPL1", label: "IRP L1", subheaders: [] },
+  { id: "IRPGENAI", label: "IRP Gen AI", subheaders: [] },
 ];
 
 const NXTMOCK_COLUMNS = [
@@ -5806,6 +5807,40 @@ const IRP_L1_COLUMNS = [
   { key: "part3Remarks", label: "Part 3 Remarks", group: IRP_L1_GROUPS.part3 },
   { key: "communicationRating", label: "Rating (0-5)", group: IRP_L1_GROUPS.communication },
   { key: "communicationRemarks", label: "Remarks", group: IRP_L1_GROUPS.communication },
+  { key: "overallRemarks", label: "Overall Remarks" },
+  { key: "finalScore", label: "Final Score" },
+  { key: "interviewIntegrityScore", label: "Integrity Score" },
+  { key: "status", label: "Clearance Status" },
+];
+
+// IRP Gen AI — added 2026-10-23, standalone Interviews bucket (own top-level tab, no subheaders).
+// Same leading/trailing columns as IRP L1; the four sections in between are the ones on the
+// Interview App's scorecard (screenshot given directly 2026-10-23). The individual questions
+// inside each section haven't been seen yet, so each section shows just its Rating and Remarks —
+// see fillIrpGenAiRubricColumns.
+const IRP_GEN_AI_GROUPS = {
+  project: { name: "Project Discussion + Live Modification", header: "#4472C4", headerText: "#fff", sub: "#DCE6F1", subText: "#1f2937" },
+  concept: { name: "Concept Section", header: "#548235", headerText: "#fff", sub: "#E2EFDA", subText: "#1f2937" },
+  dsa: { name: "Basic DSA", header: "#BF8F00", headerText: "#fff", sub: "#FFF2CC", subText: "#1f2937" },
+  communication: { name: "Communication", header: "#C00000", headerText: "#fff", sub: "#F2DCDB", subText: "#1f2937" },
+};
+
+const IRP_GEN_AI_COLUMNS = [
+  { key: "candidateId", label: "Candidate ID" },
+  { key: "candidateName", label: "Candidate Name" },
+  { key: "interviewDate", label: "Interview Date" },
+  { key: "interviewStartTime", label: "Interview Start time" },
+  { key: "panelistName", label: "Name of the Panelist" },
+  { key: "recordingLink", label: "Interview Recording Link" },
+  { key: "transcriptLink", label: "Transcript Link" },
+  { key: "projectRating", label: "Rating (0-5)", group: IRP_GEN_AI_GROUPS.project },
+  { key: "projectRemarks", label: "Remarks", group: IRP_GEN_AI_GROUPS.project },
+  { key: "conceptRating", label: "Rating (0-5)", group: IRP_GEN_AI_GROUPS.concept },
+  { key: "conceptRemarks", label: "Remarks", group: IRP_GEN_AI_GROUPS.concept },
+  { key: "dsaRating", label: "Rating (0-5)", group: IRP_GEN_AI_GROUPS.dsa },
+  { key: "dsaRemarks", label: "Remarks", group: IRP_GEN_AI_GROUPS.dsa },
+  { key: "communicationRating", label: "Rating (0-5)", group: IRP_GEN_AI_GROUPS.communication },
+  { key: "communicationRemarks", label: "Remarks", group: IRP_GEN_AI_GROUPS.communication },
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score" },
   { key: "interviewIntegrityScore", label: "Integrity Score" },
@@ -6032,6 +6067,7 @@ const INTERVIEW_TABLE_COLUMNS = {
   "SWE:": { columns: SWE_FUNDAMENTALS_COLUMNS, source: "the Interview App" },
   "BACKEND:": { columns: BACKEND_COLUMNS, source: "the Interview App" },
   "IRPL1:": { columns: IRP_L1_COLUMNS, source: "the Interview App" },
+  "IRPGENAI:": { columns: IRP_GEN_AI_COLUMNS, source: "the Interview App" },
 };
 
 // Fixed-width columns (regardless of header length) with single-line truncated cells;
@@ -6441,6 +6477,10 @@ const DIRECT_TEMPLATE_SLOTS = {
 function parseAcademySlot(templateName) {
   const name = (templateName || "").trim();
   if (DIRECT_TEMPLATE_SLOTS[name]) return DIRECT_TEMPLATE_SLOTS[name];
+  // IRP Gen AI's exact templateName hasn't been confirmed yet (2026-10-23), so it's matched
+  // loosely — any name with "IRP" followed by "Gen AI"/"GenAI". Move it into
+  // DIRECT_TEMPLATE_SLOTS once the real string is known.
+  if (/\bIRP\b.*\bgen\s*-?\s*ai\b/i.test(name)) return "IRPGENAI:";
   const m = /^Academy Bucket ([ABC])(?:\s+TR(\d)?)?\s*$/i.exec(name);
   if (!m) return null;
   const bucket = m[1].toUpperCase();
@@ -7078,6 +7118,38 @@ function fillBackendRubricColumns(row, iv) {
   return row;
 }
 
+// IRP Gen AI's domain keys haven't been checked against a real submission yet (2026-10-23), so
+// each section's domain is found by a keyword in its key rather than an exact name — IRP L1 showed
+// the Interview App doesn't always use the label-derived key (Communication was
+// "communication_skills"). Remarks: domain_remarks if present, otherwise the section's one
+// free-text field (IRP L1's parts kept theirs under an opaque "field_xxxxx" key).
+const IRP_GEN_AI_DOMAIN_MATCHERS = {
+  project: /project/,
+  concept: /concept/,
+  dsa: /dsa/,
+  communication: /communication/,
+};
+function findIrpGenAiDomain(domains, groupId) {
+  const key = Object.keys(domains).find(k => IRP_GEN_AI_DOMAIN_MATCHERS[groupId].test(k));
+  return key ? domains[key] || {} : {};
+}
+function sectionRemarks(domain) {
+  if (domain.domain_remarks) return domain.domain_remarks;
+  const freeText = Object.entries(domain).find(([k, v]) => /^field_/.test(k) && typeof v === "string");
+  return freeText ? freeText[1] : "";
+}
+function fillIrpGenAiRubricColumns(row, iv) {
+  const domains = iv.domains || {};
+  for (const [groupId, group] of Object.entries(IRP_GEN_AI_GROUPS)) {
+    const domain = findIrpGenAiDomain(domains, groupId);
+    for (const col of IRP_GEN_AI_COLUMNS) {
+      if (col.group !== group || row[col.key] !== undefined) continue;
+      row[col.key] = col.key.endsWith("Remarks") ? sectionRemarks(domain) : round2(domain.domain_rating ?? "");
+    }
+  }
+  return row;
+}
+
 // IRP L1's domain shape confirmed against a real synced submission, 2026-09-29 (via the temporary
 // rawDomainsDebug hook on Candidate ID, since removed). Findings that differ from the generic
 // fillRubricColumns convention:
@@ -7297,6 +7369,16 @@ const ACADEMY_ROW_BUILDERS = {
     _integrityDetails: iv.domains?.integrity || null,
     status: irpL1ClearanceStatus(iv),
   }, iv),
+  // Final Score passed through as-is and Clearance Status on the same 3.5 cutoff as IRP L1 — no
+  // separate Gen AI pass mark given yet (2026-10-23).
+  "IRPGENAI:": (iv) => fillIrpGenAiRubricColumns({
+    ...academyCommonFields(iv),
+    overallRemarks: iv.domains?.overall_remarks?.domain_remarks || iv.remarks || "",
+    finalScore: round2(iv.finalVerdict ?? ""),
+    interviewIntegrityScore: integrityScore(iv),
+    _integrityDetails: iv.domains?.integrity || null,
+    status: irpL1ClearanceStatus(iv),
+  }, iv),
 };
 
 // Slots shown in the stakeholder/ops stats overview at the top of the Interviews page.
@@ -7314,6 +7396,7 @@ const INTERVIEW_STATS_SLOTS = [
   { slotKey: "SWE:",     bucketId: "SWE",      subTab: "",    label: "Software Engineering Fundamentals" },
   { slotKey: "BACKEND:", bucketId: "BACKEND",  subTab: "",    label: "Backend Development" },
   { slotKey: "IRPL1:",   bucketId: "IRPL1",    subTab: "",    label: "IRP L1" },
+  { slotKey: "IRPGENAI:", bucketId: "IRPGENAI", subTab: "",   label: "IRP Gen AI" },
 ];
 
 // Tallies a built row set by a key, dropping blanks — used for Verdict Band and Levels so a
