@@ -6546,8 +6546,10 @@ function academyCommonFields(iv) {
     transcriptLink: iv.transcriptUrl || "",
     // Flags a row whose feedback was submitted (real scores/remarks exist) but whose current
     // status isn't "completed" — see the showMismatchWarning comment in InterviewDataTable for
-    // how this was diagnosed (Hitheesha, Frontend Development, 2026-09-14).
-    _statusDataMismatch: !!iv.feedbackSubmittedAt && iv.status !== "completed",
+    // how this was diagnosed (Hitheesha, Frontend Development, 2026-09-14). Partially completed
+    // interviews are exempt: the Interview App lets another panelist resume them, so feedback
+    // being submitted on a not-yet-completed interview is expected there (2026-10-26).
+    _statusDataMismatch: !!iv.feedbackSubmittedAt && iv.status !== "completed" && !isPartialStatus(iv.status),
     _feedbackSubmittedAt: iv.feedbackSubmittedAt || "",
   };
 }
