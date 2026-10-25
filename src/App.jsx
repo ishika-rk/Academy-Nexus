@@ -4144,8 +4144,11 @@ function ResultsDirectoryTab({ files, role, onUpload, onUpdate, onDelete, onRest
         {canWrite && <Btn onClick={() => { setPreview(null); setStatus(null); setShowUpload(true); }}>Upload Results CSV</Btn>}
       </div>
       {(files || []).length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search by exam name, date or file" style={{ ...inputS, width: 320, maxWidth: "100%" }} />
+        <div style={{ marginBottom: 14, position: "relative", width: 320, maxWidth: "100%" }}>
+          <input value={listSearch} onChange={e => setListSearch(e.target.value)} placeholder="Search by exam name, date or file" style={{ ...inputS, width: "100%", paddingRight: listSearch ? 28 : 10 }} />
+          {listSearch && (
+            <button onClick={() => setListSearch("")} title="Clear search" style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 14, padding: 2 }}>✕</button>
+          )}
         </div>
       )}
 
@@ -4299,7 +4302,12 @@ function ResultsDirectoryTab({ files, role, onUpload, onUpdate, onDelete, onRest
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <input value={viewSearch} onChange={e => { setViewSearch(e.target.value); setViewPage(1); }} placeholder="Search any column (UID, name, score…)" style={{ ...inputS, width: 320 }} />
+                <div style={{ position: "relative", width: 320, maxWidth: "100%" }}>
+                  <input value={viewSearch} onChange={e => { setViewSearch(e.target.value); setViewPage(1); }} placeholder="Search any column (UID, name, score…)" style={{ ...inputS, width: "100%", paddingRight: viewSearch ? 28 : 10 }} />
+                  {viewSearch && (
+                    <button onClick={() => { setViewSearch(""); setViewPage(1); }} title="Clear search" style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 14, padding: 2 }}>✕</button>
+                  )}
+                </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: C.muted }}>
                   <span><strong style={{ color: C.text }}>{viewRows.length}</strong> {viewSearch.trim() ? "matching" : ""} rows</span>
                   <Btn variant="secondary" size="sm" onClick={() => download(viewing.file)}>Download CSV</Btn>
@@ -6291,8 +6299,11 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search…"
-            style={{ width: "100%", padding: "7px 10px 7px 30px", fontSize: 12, border: `1px solid ${C.border}`, borderRadius: 7, fontFamily: "inherit", color: C.text, background: C.surface, boxSizing: "border-box" }}
+            style={{ width: "100%", padding: `7px ${search ? 28 : 10}px 7px 30px`, fontSize: 12, border: `1px solid ${C.border}`, borderRadius: 7, fontFamily: "inherit", color: C.text, background: C.surface, boxSizing: "border-box" }}
           />
+          {search && (
+            <button onClick={() => setSearch("")} title="Clear search" style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 14, padding: 2 }}>✕</button>
+          )}
         </div>
         <Btn variant="secondary" size="sm" onClick={() => downloadCsv(`${exportLabel || "interviews"}.csv`, columns, filteredRows)}>Export CSV</Btn>
       </div>
