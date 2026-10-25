@@ -6145,8 +6145,10 @@ function StatusFilterHeader({ label, options, selected, onChange, thStyle, rowSp
     <th ref={ref} rowSpan={rowSpan} style={{ ...thStyle, position: thStyle.position || "relative" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
         <span>{label}</span>
-        <button onClick={() => setOpen(o => !o)} title="Filter" style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: selected ? C.accent : C.muted, display: "inline-flex", flexShrink: 0 }}>
-          <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M2 3h12l-4.5 5.5V13l-3 1.5V8.5L2 3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /></svg>
+        {/* Active = white filled funnel on a solid accent badge; a color change alone on the outline
+            icon was invisible against the accent-tinted outcome headers. */}
+        <button onClick={() => setOpen(o => !o)} title={selected ? `Filtered: ${selected.size} of ${options.length} shown` : "Filter"} style={{ background: selected ? C.accent : "none", border: "none", borderRadius: 4, cursor: "pointer", padding: selected ? 3 : 2, color: selected ? "#fff" : C.muted, display: "inline-flex", flexShrink: 0 }}>
+          <svg width="11" height="11" viewBox="0 0 16 16" fill={selected ? "currentColor" : "none"}><path d="M2 3h12l-4.5 5.5V13l-3 1.5V8.5L2 3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /></svg>
         </button>
       </div>
       {open && (
@@ -6195,6 +6197,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
     const selected = columnFilters[c.key];
     return selected ? acc.filter(r => selected.has(r[c.key])) : acc;
   }, searchedRows);
+  const activeFilterCols = filterableCols.filter(c => columnFilters[c.key]);
 
   useEffect(() => { setPage(1); }, [search, columnFilters]);
 
@@ -6293,6 +6296,21 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
         </div>
         <Btn variant="secondary" size="sm" onClick={() => downloadCsv(`${exportLabel || "interviews"}.csv`, columns, filteredRows)}>Export CSV</Btn>
       </div>
+
+      {/* Which column filters are on, visible even when the filtered column is scrolled off-screen. */}
+      {activeFilterCols.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 12, fontSize: 12, color: C.accentDark, background: C.accentLight, border: `1px solid ${C.accent}`, borderRadius: 7, padding: "8px 12px" }}>
+          <strong>Filtered:</strong>
+          {activeFilterCols.map(c => (
+            <span key={c.key} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: C.surface, border: `1px solid ${C.accent}`, borderRadius: 999, padding: "2px 4px 2px 10px" }}>
+              {c.label} ({columnFilters[c.key].size} of {filterOptionsByKey[c.key].length})
+              <button onClick={() => setColumnFilters(f => ({ ...f, [c.key]: null }))} title={`Clear ${c.label} filter`} style={{ background: "none", border: "none", cursor: "pointer", color: C.accentDark, fontSize: 12, padding: "0 4px", fontFamily: "inherit" }}>✕</button>
+            </span>
+          ))}
+          <span style={{ color: C.muted }}>· {filteredRows.length} of {searchedRows.length} rows</span>
+          <button onClick={() => setColumnFilters({})} style={{ marginLeft: "auto", background: "none", border: "none", color: C.red, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>✕ Clear all filters</button>
+        </div>
+      )}
 
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
         <table style={{ borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
