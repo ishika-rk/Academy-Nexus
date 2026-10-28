@@ -50,7 +50,7 @@ function emailVariants(v) {
 // Same rule as irpL1ClearanceStatus in src/App.jsx — keep the two in sync.
 function irpL1ClearanceStatus(iv) {
   if (iv.status !== "completed") return iv.status || "";
-  if (iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "") return "";
+  if (iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "") return "Completed";
   return Number(iv.finalVerdict) >= 3.5 ? "Cleared" : "Not Cleared";
 }
 

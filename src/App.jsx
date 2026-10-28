@@ -6739,10 +6739,11 @@ function bucketBTR2ClearanceStatus(iv) {
 // version — no outcome/band override like the other buckets' clearance formulas). Non-completed
 // interviews (no_show, cancelled, scheduled, ...) pass their raw iv.status through unchanged, same
 // convention as every other bucket, instead of rendering blank like a genuinely missing score
-// would. A completed interview with no Final Score yet stays blank rather than guessing.
+// would. A completed interview with no Final Score yet shows "Completed" rather than guessing —
+// changed from blank 2026-10-28 to match IRP Gen AI / academyOutcomeStatus.
 function irpL1ClearanceStatus(iv) {
   if (iv.status !== "completed") return iv.status || "";
-  if (iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "") return "";
+  if (iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "") return "Completed";
   return Number(iv.finalVerdict) >= 3.5 ? "Cleared" : "Not Cleared";
 }
 
