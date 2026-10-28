@@ -73,6 +73,14 @@ function irpGenAiClearanceStatus(iv, band) {
   return "Completed";
 }
 
+// Same rule as sectionRemarks in src/App.jsx — keep the two in sync: domain_remarks if present,
+// otherwise the section's one free-text "field_xxxxx" value.
+function sectionRemarks(domain) {
+  if (domain.domain_remarks) return domain.domain_remarks;
+  const freeText = Object.entries(domain).find(([k, v]) => /^field_/.test(k) && typeof v === "string");
+  return freeText ? freeText[1] : "";
+}
+
 // Fields every template's result starts with.
 function commonFields(iv) {
   return {
@@ -126,13 +134,13 @@ const TEMPLATES = {
       return {
         ...commonFields(iv),
         projectRating: round2(section("project_discussion_live_modification").domain_rating),
-        projectRemarks: section("project_discussion_live_modification").domain_remarks || "",
+        projectRemarks: sectionRemarks(section("project_discussion_live_modification")),
         conceptRating: round2(section("concept_section").domain_rating),
-        conceptRemarks: section("concept_section").domain_remarks || "",
+        conceptRemarks: sectionRemarks(section("concept_section")),
         dsaRating: round2(section("basic_dsa").domain_rating),
-        dsaRemarks: section("basic_dsa").domain_remarks || "",
+        dsaRemarks: sectionRemarks(section("basic_dsa")),
         communicationRating: round2(section("communication").domain_rating),
-        communicationRemarks: section("communication").domain_remarks || "",
+        communicationRemarks: sectionRemarks(section("communication")),
         finalScore,
         verdictBand,
         clearanceStatus: irpGenAiClearanceStatus(iv, verdictBand),
