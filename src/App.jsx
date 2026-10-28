@@ -5852,6 +5852,7 @@ const IRP_GEN_AI_COLUMNS = [
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Integrity Score" },
+  { key: "verdict", label: "Verdict Band" },
   { key: "status", label: "Clearance Status" },
 ];
 
@@ -6676,11 +6677,9 @@ function backendVerdictBand(finalScore) {
   return "Reject";
 }
 
-// IRP Gen AI's Clearance Status, rule given 2026-10-25, on the 0-100 Final Score: Strong Hire
-// >= 70, Medium Hire >= 60, Low Hire >= 40, Rejected below 40. A blank Final Score stays blank —
-// including non-completed interviews (no_show, scheduled, ...), which have no score, rather than
-// passing their raw status through like other buckets do.
-function irpGenAiClearanceStatus(finalScore) {
+// IRP Gen AI's Verdict Band, rule given 2026-10-25, on the 0-100 Final Score: Strong Hire >= 70,
+// Medium Hire >= 60, Low Hire >= 40, Rejected below 40. A blank Final Score stays blank.
+function irpGenAiVerdictBand(finalScore) {
   if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
   const n = Number(finalScore);
   if (!Number.isFinite(n)) return "";
@@ -6688,6 +6687,17 @@ function irpGenAiClearanceStatus(finalScore) {
   if (n >= 60) return "Medium Hire";
   if (n >= 40) return "Low Hire";
   return "Rejected";
+}
+
+// IRP Gen AI's Clearance Status, rule given 2026-10-28: Strong/Medium Hire -> Cleared, Low Hire/
+// Rejected -> Not Cleared. Non-completed interviews pass the Interview App's raw status through
+// (no_show, cancelled, ...); a completed one with no band yet shows "Completed" — both the same
+// as academyOutcomeStatus, which can't be reused as-is since it spells the lowest band "Reject".
+function irpGenAiClearanceStatus(iv, band) {
+  if (iv.status !== "completed") return iv.status || "";
+  if (band === "Strong Hire" || band === "Medium Hire") return "Cleared";
+  if (band === "Low Hire" || band === "Rejected") return "Not Cleared";
+  return "Completed";
 }
 
 // Bucket C's clearance status: an outcome already set by the Interview App (Shortlisted/
@@ -7418,17 +7428,15 @@ const ACADEMY_ROW_BUILDERS = {
   // Clearance Status is a hire band on that score — see irpGenAiClearanceStatus.
   "IRPGENAI:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict ?? "");
-    const band = irpGenAiClearanceStatus(finalScore);
+    const band = irpGenAiVerdictBand(finalScore);
     return fillIrpGenAiRubricColumns({
       ...academyCommonFields(iv),
       overallRemarks: iv.domains?.overall_remarks?.domain_remarks || iv.remarks || "",
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
       _integrityDetails: iv.domains?.integrity || null,
-      // Not a column here — feeds the Overview's Verdict Band breakdown, which spells the
-      // lowest band "Reject" (VERDICT_BAND_ORDER).
-      verdict: band === "Rejected" ? "Reject" : band,
-      status: band,
+      verdict: band,
+      status: irpGenAiClearanceStatus(iv, band),
     }, iv);
   },
 };
@@ -7572,7 +7580,8 @@ function computeSlotStats(academyInterviews, slotKey, eligibility = []) {
       }),
     cleared: latestRows.filter(r => r.status === "Cleared").length,
     notCleared: latestRows.filter(r => r.status === "Not Cleared").length,
-    verdictCounts: tallyNonBlank(latestRows, "verdict"),
+    // IRP Gen AI spells its lowest band "Rejected"; counted under VERDICT_BAND_ORDER's "Reject".
+    verdictCounts: tallyNonBlank(latestRows.map(r => r.verdict === "Rejected" ? { ...r, verdict: "Reject" } : r), "verdict"),
     levelsCounts: tallyNonBlank(latestRows, "levels"),
   };
 }
