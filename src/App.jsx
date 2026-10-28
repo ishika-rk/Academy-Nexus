@@ -6373,11 +6373,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
                   // is more useful than the bare number.
                   const details = col.key === "interviewIntegrityScore" ? row._integrityDetails : null;
                   const descriptor = row._domainDescriptors?.[col.key];
-                  // TEMPORARY debug aid, 2026-10-28: clicking Candidate ID dumps the raw synced
-                  // payload so IRP Gen AI's exact templateName and rubric field mapping can be
-                  // confirmed against real data, same as every other bucket. Remove once confirmed.
-                  const rawDomainsDebug = col.key === "candidateId" ? row._rawDomainsDebug : null;
-                  const clickable = hasValue || !!details || !!descriptor || !!rawDomainsDebug;
+                  const clickable = hasValue || !!details || !!descriptor;
                   // Data-mismatch warning: confirmed 2026-09-14 (Hitheesha, Frontend Development)
                   // that the Interview Coordinator App can leave a doc's feedbackSubmittedAt/
                   // domains/finalVerdict populated from an earlier attempt after the doc gets
@@ -6395,7 +6391,6 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
                       onClick={clickable ? () => setExpanded(
                         details ? { label: "Interview Integrity Details", value: formatIntegrityDetails(details) }
                         : descriptor ? { label: `${col.label} — Descriptor`, value: descriptor }
-                        : rawDomainsDebug ? { label: "Candidate ID — DEBUG (raw synced payload)", value: JSON.stringify(rawDomainsDebug, null, 2) }
                         : { label: col.label, value }
                       ) : undefined}
                     >
@@ -7436,9 +7431,6 @@ const ACADEMY_ROW_BUILDERS = {
     const band = irpGenAiVerdictBand(finalScore);
     return fillIrpGenAiRubricColumns({
       ...academyCommonFields(iv),
-      // TEMPORARY debug field, 2026-10-28 — see rawDomainsDebug in InterviewDataTable. Remove
-      // once IRP Gen AI's templateName and rubric field mapping are confirmed.
-      _rawDomainsDebug: { templateName: iv.templateName, status: iv.status, finalVerdict: iv.finalVerdict ?? null, domains: iv.domains || null },
       overallRemarks: iv.domains?.overall_remarks?.domain_remarks || iv.remarks || "",
       finalScore,
       interviewIntegrityScore: integrityScore(iv),
