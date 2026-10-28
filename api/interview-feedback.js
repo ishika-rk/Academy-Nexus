@@ -1,5 +1,6 @@
 import { adminDb } from "./_lib/firebaseAdmin.js";
 import { requireApiKey } from "./_lib/auth.js";
+import { isExcludedCandidate } from "./_lib/excludedCandidates.js";
 
 // Called BY the Interview Coordinator App the moment an Academy interview's
 // status/feedback changes (in particular, when it's marked "completed") —
@@ -49,6 +50,11 @@ export default async function handler(req, res) {
 
   if (!interviewId || !status) {
     return res.status(400).json({ error: "interviewId and status are required" });
+  }
+
+  // Test/dummy candidates are acknowledged but never stored — see api/_lib/excludedCandidates.js.
+  if (isExcludedCandidate({ candidateUid, candidateName })) {
+    return res.status(200).json({ ok: true, skipped: "excluded test candidate" });
   }
 
   try {

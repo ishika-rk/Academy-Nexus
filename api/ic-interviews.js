@@ -1,4 +1,5 @@
 import { adminDb } from "./_lib/firebaseAdmin.js";
+import { isExcludedCandidate, addExcludedCandidateDeletes } from "./_lib/excludedCandidates.js";
 import { requireUser } from "./_lib/auth.js";
 
 // Pulls Academy interviews directly from the Interview Coordinator App's own
@@ -41,13 +42,6 @@ const FULL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 // isn't meant to wait it out exactly, just to stop us from hammering it while it's down and
 // recover automatically instead of relying on someone remembering not to click "Sync Now".
 const QUOTA_BACKOFF_MS = 30 * 60 * 1000;
-
-// Known test/dummy candidates from the Interview Coordinator App's own testing that should
-// never surface in Academy Nexus, even though they carry programName "Academy". Exact
-// candidateName match, checked before every upsert so they never land in our `interviews`
-// collection in the first place (deleting our copy alone wouldn't stick — the next sync,
-// automatic or "Sync Now", would just pull it right back in from their side).
-const EXCLUDED_CANDIDATE_NAMES = new Set(["HarshitaStudent"]);
 
 function maxIso(a, b) {
   if (!a) return b;
@@ -159,7 +153,8 @@ export default async function handler(req, res) {
     }
 
     const interviews = snap.docs
-      .filter((d) => !EXCLUDED_CANDIDATE_NAMES.has((d.data().candidateName || "").trim()))
+      // Test/dummy candidates — see api/_lib/excludedCandidates.js.
+      .filter((d) => !isExcludedCandidate(d.data()))
       .map((d) => {
       const r = d.data();
       const feedback = r.feedback || {};
@@ -215,12 +210,9 @@ export default async function handler(req, res) {
     for (const iv of interviews) {
       batch.set(adminDb.collection("interviews").doc(iv.id), { ...iv, syncedAt }, { merge: true });
     }
-    // One-time cleanup: purge any excluded candidate already sitting in our own collection
-    // from before this filter existed (the filter above only stops it from coming back).
-    const staleExcluded = await adminDb.collection("interviews")
-      .where("candidateName", "in", [...EXCLUDED_CANDIDATE_NAMES])
-      .get();
-    for (const d of staleExcluded.docs) batch.delete(d.ref);
+    // Purge any excluded candidate already sitting in our own collection from before they were
+    // added to the list (the filter above only stops them from coming back).
+    await addExcludedCandidateDeletes(adminDb, batch);
     await batch.commit();
 
     // Only advance the watermark (and, on a full sync, the full-sync clock) after the batch
