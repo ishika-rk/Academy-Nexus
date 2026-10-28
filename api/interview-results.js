@@ -54,6 +54,38 @@ function irpL1ClearanceStatus(iv) {
   return Number(iv.finalVerdict) >= 3.5 ? "Cleared" : "Not Cleared";
 }
 
+// Same rule as irpGenAiVerdictBand in src/App.jsx — keep the two in sync. Banded on the 0-100
+// Final Score whatever the status (as the app does), so a scored non-completed sitting still
+// gets a band; Clearance Status below is what reflects the status.
+function irpGenAiVerdictBand(finalScore) {
+  if (finalScore === null) return "";
+  if (finalScore >= 70) return "Strong Hire";
+  if (finalScore >= 60) return "Medium Hire";
+  if (finalScore >= 40) return "Low Hire";
+  return "Rejected";
+}
+
+// Same rule as irpGenAiClearanceStatus in src/App.jsx — keep the two in sync.
+function irpGenAiClearanceStatus(iv, band) {
+  if (iv.status !== "completed") return iv.status || "";
+  if (band === "Strong Hire" || band === "Medium Hire") return "Cleared";
+  if (band === "Low Hire" || band === "Rejected") return "Not Cleared";
+  return "Completed";
+}
+
+// Fields every template's result starts with.
+function commonFields(iv) {
+  return {
+    // Our interviews/{id} doc id, which is the Interview Coordinator App's own interview id
+    // (both sync paths key on it) — stable, so callers can tell a student's sittings apart.
+    interviewId: iv.id,
+    candidateId: (iv.candidateUid || "").trim() || iv.id,
+    candidateName: (iv.candidateName || "").trim(),
+    interviewDate: iv.scheduledDate || "",
+    interviewStartTime: iv.scheduledTime || "",
+  };
+}
+
 // Public slug -> where that template's results live and how each one is shaped. The slug is ours
 // and stays fixed even if the Interview Coordinator App renames the template on their side (only
 // `templateName` below would need updating).
@@ -68,19 +100,42 @@ const TEMPLATES = {
     toResult: (iv) => {
       const domains = iv.domains || {};
       return {
-        // Our interviews/{id} doc id, which is the Interview Coordinator App's own interview id
-        // (both sync paths key on it) — stable, so callers can tell a student's sittings apart.
-        interviewId: iv.id,
-        candidateId: (iv.candidateUid || "").trim() || iv.id,
-        candidateName: (iv.candidateName || "").trim(),
-        interviewDate: iv.scheduledDate || "",
-        interviewStartTime: iv.scheduledTime || "",
+        ...commonFields(iv),
         part1Avg: round2(domains.take_home_assignment_drill_down?.domain_rating),
         part2Avg: round2(domains.frontend_conceptual_discussion?.domain_rating),
         part3Avg: round2(domains.react_live_coding?.domain_rating),
         communicationRating: round2(domains.communication_skills?.domain_rating),
         finalScore: round2(iv.finalVerdict),
         clearanceStatus: irpL1ClearanceStatus(iv),
+      };
+    },
+  },
+  "irp-gen-ai": {
+    collection: "interviews",
+    templateName: "IRP Gen AI",
+    emailField: "candidateEmail",
+    candidateIdField: "candidateUid",
+    // templateName and domain keys confirmed against two real synced docs (one completed, one
+    // partially completed), 2026-10-28. Each section carries domain_rating (0-5) and
+    // domain_remarks; finalVerdict is out of 5 and shown out of 100, same as the app.
+    toResult: (iv) => {
+      const domains = iv.domains || {};
+      const section = (key) => domains[key] || {};
+      const finalScore = round2(iv.finalVerdict === undefined || iv.finalVerdict === null || iv.finalVerdict === "" ? null : Number(iv.finalVerdict) * 20);
+      const verdictBand = irpGenAiVerdictBand(finalScore);
+      return {
+        ...commonFields(iv),
+        projectRating: round2(section("project_discussion_live_modification").domain_rating),
+        projectRemarks: section("project_discussion_live_modification").domain_remarks || "",
+        conceptRating: round2(section("concept_section").domain_rating),
+        conceptRemarks: section("concept_section").domain_remarks || "",
+        dsaRating: round2(section("basic_dsa").domain_rating),
+        dsaRemarks: section("basic_dsa").domain_remarks || "",
+        communicationRating: round2(section("communication").domain_rating),
+        communicationRemarks: section("communication").domain_remarks || "",
+        finalScore,
+        verdictBand,
+        clearanceStatus: irpGenAiClearanceStatus(iv, verdictBand),
       };
     },
   },
