@@ -5070,13 +5070,28 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               const validRows = eligPreview.rows.filter(r => r.action !== "error");
               const shown = eligPreviewErrorsOnly ? errorRows : eligPreview.rows;
               const pth = { ...thBase, position: "sticky", top: 0, zIndex: 1, background: C.surfaceAlt };
+              // For "update" rows: the student+template already has a live record — show which
+              // upload it came from and old → new for each field this upload will overwrite.
+              const liveById = new Map((eligibility || []).map(e => [e.id, e]));
+              const uploadById = new Map((eligibilityUploads || []).map(u => [u.id, u]));
+              const changesFor = (r) => {
+                const old = liveById.get(r.id);
+                if (!old) return [];
+                const same = (k, a, b) => k === "email" ? a.toLowerCase() === b.toLowerCase() : a === b;
+                return [["Name", "name"], ["Phone", "phone"], ["Email", "email"]]
+                  .map(([label, k]) => ({ label, k, from: String(old[k] ?? "").trim(), to: String(r[k] ?? "").trim() }))
+                  .filter(c => !same(c.k, c.from, c.to));
+              };
+              const updateRows = validRows.filter(r => r.action === "update");
+              const changedCount = updateRows.filter(r => changesFor(r).length > 0).length;
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12, color: C.muted }}>
                     <div>
                       <strong style={{ color: C.text }}>{eligPreview.fileName}</strong> · {eligPreview.rows.length} rows ·{" "}
                       <span style={{ color: C.green, fontWeight: 700 }}>{validRows.filter(r => r.action === "new").length} new</span> ·{" "}
-                      <span style={{ color: C.blue, fontWeight: 700 }}>{validRows.filter(r => r.action === "update").length} update</span> ·{" "}
+                      <span style={{ color: C.blue, fontWeight: 700 }}>{updateRows.length} update</span>
+                      {updateRows.length > 0 && <> ({changedCount} with changed details, {updateRows.length - changedCount} identical)</>} ·{" "}
                       <span style={{ color: errorRows.length ? C.red : C.muted, fontWeight: 700 }}>{errorRows.length} with errors</span>
                       {validRows.some(r => r.detailsFrom === "directory" || r.detailsFrom === "mixed") && <> · {validRows.filter(r => r.detailsFrom === "directory" || r.detailsFrom === "mixed").length} filled from Results Directory</>}
                       {validRows.some(r => r.missing?.length) && <> · <span style={{ color: C.yellow, fontWeight: 700 }}>{validRows.filter(r => r.missing?.length).length} missing details</span></>}
@@ -5121,13 +5136,41 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                                     </div>
                                     {r.missing?.length > 0 && <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: 2 }}>⚠️ Missing: {r.missing.join(", ")}</div>}
                                     {r.mismatches?.map(m => <div key={m} style={{ fontSize: 11, color: C.red, marginTop: 2 }}>⚠️ {m}</div>)}
+                                    {r.action === "update" && (() => {
+                                      const changes = changesFor(r);
+                                      return (
+                                        <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 6, background: C.blueLight || "#eff6ff", fontSize: 11, lineHeight: 1.5 }}>
+                                          {changes.length === 0 ? (
+                                            <span style={{ color: C.muted }}>Same as current record — nothing changes</span>
+                                          ) : (<>
+                                            <div style={{ fontWeight: 700, color: C.blue }}>Changes vs current record:</div>
+                                            {changes.map(c => (
+                                              <div key={c.k}>
+                                                <span style={{ color: C.muted }}>{c.label}: </span>
+                                                <span style={{ textDecoration: "line-through", color: C.muted }}>{c.from || "(blank)"}</span>
+                                                {" → "}
+                                                <strong style={{ color: c.to ? C.text : C.red }}>{c.to || "(blank)"}</strong>
+                                              </div>
+                                            ))}
+                                          </>)}
+                                        </div>
+                                      );
+                                    })()}
                                   </>)}
                                 </td>
                                 <td style={cell}>{r.templateSlot ? slotLabel(r.templateSlot) : (r.rawTemplate || "—")}</td>
                                 <td style={cell}>
                                   {r.action === "error"
                                     ? <div style={{ color: C.red, lineHeight: 1.5 }}>{r.errors.map(e => <div key={e}>{e}</div>)}</div>
-                                    : r.action === "update" ? <Badge color="blue">Update</Badge> : <Badge color="green">New</Badge>}
+                                    : r.action === "update" ? (() => {
+                                      const prev = uploadById.get(liveById.get(r.id)?.uploadId);
+                                      return (<>
+                                        <Badge color="blue">Update</Badge>
+                                        <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
+                                          {prev ? <>Already in <strong style={{ color: C.text }}>{prev.fileName}</strong> · {fmtDate(prev.uploadedAt)}</> : "Already on the eligibility list"}
+                                        </div>
+                                      </>);
+                                    })() : <Badge color="green">New</Badge>}
                                 </td>
                               </tr>
                             );
