@@ -6479,20 +6479,28 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
           <span style={{ fontSize: 12, color: C.muted }}>
             {(clampedPage - 1) * INTERVIEW_PAGE_SIZE + 1}–{Math.min(clampedPage * INTERVIEW_PAGE_SIZE, filteredRows.length)} of {filteredRows.length}
           </span>
-          <div style={{ display: "flex", gap: 6 }}>
+          {/* Compact pager: first, last, and current ±1, with "…" for the gaps — listing every page
+              overflowed the row once a bucket had 20+ pages. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={clampedPage === 1}
-              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: clampedPage === 1 ? "not-allowed" : "pointer", color: clampedPage === 1 ? C.muted : C.text, fontFamily: "inherit" }}>
-              ← Prev
+              style={{ background: "none", border: "none", padding: "6px 10px", fontSize: 13, fontWeight: 500, cursor: clampedPage === 1 ? "default" : "pointer", color: clampedPage === 1 ? C.border : C.muted, fontFamily: "inherit" }}>
+              ‹ Prev
             </button>
-            {Array.from({ length: totalPages }, (_, k) => k + 1).map(pg => (
-              <button key={pg} onClick={() => setPage(pg)}
-                style={{ background: pg === clampedPage ? C.accent : C.surface, border: `1px solid ${pg === clampedPage ? C.accent : C.border}`, borderRadius: 7, padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: "pointer", color: pg === clampedPage ? "#fff" : C.text, fontFamily: "inherit" }}>
-                {pg}
-              </button>
-            ))}
+            {[...new Set([1, clampedPage - 1, clampedPage, clampedPage + 1, totalPages])]
+              .filter(pg => pg >= 1 && pg <= totalPages)
+              .sort((a, b) => a - b)
+              .flatMap((pg, i, arr) => i > 0 && pg - arr[i - 1] > 1 ? [`gap-${pg}`, pg] : [pg])
+              .map(pg => typeof pg === "string" ? (
+                <span key={pg} style={{ minWidth: 24, textAlign: "center", fontSize: 13, color: C.muted }}>…</span>
+              ) : (
+                <button key={pg} onClick={() => setPage(pg)}
+                  style={{ width: 32, height: 32, borderRadius: "50%", border: "none", background: pg === clampedPage ? C.accent : "none", fontSize: 13, fontWeight: 600, cursor: "pointer", color: pg === clampedPage ? "#fff" : C.muted, fontFamily: "inherit" }}>
+                  {pg}
+                </button>
+              ))}
             <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={clampedPage === totalPages}
-              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: clampedPage === totalPages ? "not-allowed" : "pointer", color: clampedPage === totalPages ? C.muted : C.text, fontFamily: "inherit" }}>
-              Next →
+              style={{ background: "none", border: "none", padding: "6px 10px", fontSize: 13, fontWeight: 500, cursor: clampedPage === totalPages ? "default" : "pointer", color: clampedPage === totalPages ? C.border : C.muted, fontFamily: "inherit" }}>
+              Next ›
             </button>
           </div>
         </div>
