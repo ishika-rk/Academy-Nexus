@@ -6698,9 +6698,9 @@ function scaleOutOfFiveToHundred(raw) {
 // - Frontend Development / DSA: sheet formula given 2026-09-14,
 //   =IF(AK2="","",IF(AK2>=80,"Strong Hire",IF(AK2>=65,"Medium Hire",IF(AK2>=50,"Low Hire","Reject"))))
 // - SWE Fundamentals / Backend Development: Strong Hire >= 75, Medium Hire >= 60, Low Hire >= 45,
-//   given 2026-09-15. The "Reject" label below 45 wasn't explicitly given — inferred from the
-//   Frontend Development/DSA structure; flag if that's wrong. Kept as separate entries even though
-//   the numbers match, so each template's rule can change on its own.
+//   given 2026-09-15. The "Reject" label below 45 was first inferred from Frontend Development/DSA,
+//   then confirmed 2026-11-12. Kept as separate entries even though the numbers match, so each
+//   template's rule can change on its own.
 // - IRP Gen AI: Strong Hire >= 70, Medium Hire >= 60, Low Hire >= 40, Rejected below 40, given
 //   2026-10-25.
 const VERDICT_CUTOFFS = {
