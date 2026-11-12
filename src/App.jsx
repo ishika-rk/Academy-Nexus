@@ -6225,8 +6225,9 @@ function StatusFilterHeader({ label, options, selected, onChange, thStyle, rowSp
   );
 }
 
-function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onRequestDelete }) {
+function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onRequestDelete, criteria, criteriaTitle }) {
   const [expanded, setExpanded] = useState(null); // { label, value } | null
+  const [showCriteria, setShowCriteria] = useState(false);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [columnFilters, setColumnFilters] = useState({}); // { [colKey]: Set|null }; null/absent = all
@@ -6349,7 +6350,10 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
             <button onClick={() => setSearch("")} title="Clear search" style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 14, padding: 2 }}>✕</button>
           )}
         </div>
-        <Btn variant="secondary" size="sm" onClick={() => downloadCsv(`${exportLabel || "interviews"}.csv`, columns, filteredRows)}>Export CSV</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          {criteria && <Btn variant="secondary" size="sm" onClick={() => setShowCriteria(true)}>ⓘ Criteria</Btn>}
+          <Btn variant="secondary" size="sm" onClick={() => downloadCsv(`${exportLabel || "interviews"}.csv`, columns, filteredRows)}>Export CSV</Btn>
+        </div>
       </div>
 
       {/* Which column filters are on, visible even when the filtered column is scrolled off-screen. */}
@@ -6504,6 +6508,12 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
             </button>
           </div>
         </div>
+      )}
+
+      {showCriteria && criteria && (
+        <Modal title={`${criteriaTitle} — Criteria`} onClose={() => setShowCriteria(false)} width={640}>
+          <InterviewCriteriaPanel criteria={criteria} />
+        </Modal>
       )}
 
       {expanded && (
@@ -6682,63 +6692,39 @@ function scaleOutOfFiveToHundred(raw) {
   return Number.isFinite(n) ? round2(n * 20) : raw;
 }
 
-// Frontend Development / DSA's Verdict band, matching the sheet formula given 2026-09-14:
-// =IF(AK2="","",IF(AK2>=80,"Strong Hire",IF(AK2>=65,"Medium Hire",IF(AK2>=50,"Low Hire","Reject"))))
-// AK2 there is the 0-100 Final Score (see scaleOutOfFiveToHundred) — blank input stays blank
-// rather than falling through to "Reject".
-function verdictBand(finalScore) {
+// Each template's Verdict Band cutoffs on the 0-100 Final Score, highest band first, plus the label
+// for anything below the last cutoff. Single source for both the calculation (bandFromCutoffs)
+// and the read-only Criteria panel on each Interviews tab, so the two can't drift apart.
+// - Frontend Development / DSA: sheet formula given 2026-09-14,
+//   =IF(AK2="","",IF(AK2>=80,"Strong Hire",IF(AK2>=65,"Medium Hire",IF(AK2>=50,"Low Hire","Reject"))))
+// - SWE Fundamentals / Backend Development: Strong Hire >= 75, Medium Hire >= 60, Low Hire >= 45,
+//   given 2026-09-15. The "Reject" label below 45 wasn't explicitly given — inferred from the
+//   Frontend Development/DSA structure; flag if that's wrong. Kept as separate entries even though
+//   the numbers match, so each template's rule can change on its own.
+// - IRP Gen AI: Strong Hire >= 70, Medium Hire >= 60, Low Hire >= 40, Rejected below 40, given
+//   2026-10-25.
+const VERDICT_CUTOFFS = {
+  FRONTEND: { bands: [["Strong Hire", 80], ["Medium Hire", 65], ["Low Hire", 50]], below: "Reject" },
+  DSA:      { bands: [["Strong Hire", 80], ["Medium Hire", 65], ["Low Hire", 50]], below: "Reject" },
+  SWE:      { bands: [["Strong Hire", 75], ["Medium Hire", 60], ["Low Hire", 45]], below: "Reject" },
+  BACKEND:  { bands: [["Strong Hire", 75], ["Medium Hire", 60], ["Low Hire", 45]], below: "Reject" },
+  IRPGENAI: { bands: [["Strong Hire", 70], ["Medium Hire", 60], ["Low Hire", 40]], below: "Rejected" },
+};
+
+// A blank Final Score stays blank rather than falling through to the lowest band.
+function bandFromCutoffs(finalScore, { bands, below }) {
   if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
   const n = Number(finalScore);
   if (!Number.isFinite(n)) return "";
-  if (n >= 80) return "Strong Hire";
-  if (n >= 65) return "Medium Hire";
-  if (n >= 50) return "Low Hire";
-  return "Reject";
+  const hit = bands.find(([, min]) => n >= min);
+  return hit ? hit[0] : below;
 }
 
-// Software Engineering Fundamentals' Verdict Band, criteria given 2026-09-15 — different cutoffs
-// than Frontend Development/DSA's verdictBand above, scoped to this bucket only:
-// Strong Hire >= 75, Medium Hire >= 60, Low Hire >= 45. The catch-all "Reject" below 45 wasn't
-// explicitly given — inferred from the same four-band structure already established for
-// Frontend Development/DSA; flag if that's wrong. Blank input stays blank rather than falling
-// through to "Reject", same as verdictBand.
-function sweVerdictBand(finalScore) {
-  if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
-  const n = Number(finalScore);
-  if (!Number.isFinite(n)) return "";
-  if (n >= 75) return "Strong Hire";
-  if (n >= 60) return "Medium Hire";
-  if (n >= 45) return "Low Hire";
-  return "Reject";
-}
-
-// Backend Development's Verdict Band, criteria given 2026-09-15 — a separate function scoped to
-// this bucket only, even though its cutoffs happen to be numerically identical to SWE
-// Fundamentals' sweVerdictBand (Strong Hire >= 75, Medium Hire >= 60, Low Hire >= 45) — kept
-// independent rather than reused so each bucket's rule can be edited/documented on its own
-// without assuming coincidence implies a shared source. Same Reject-catch-all inference and
-// blank-stays-blank behavior as sweVerdictBand.
-function backendVerdictBand(finalScore) {
-  if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
-  const n = Number(finalScore);
-  if (!Number.isFinite(n)) return "";
-  if (n >= 75) return "Strong Hire";
-  if (n >= 60) return "Medium Hire";
-  if (n >= 45) return "Low Hire";
-  return "Reject";
-}
-
-// IRP Gen AI's Verdict Band, rule given 2026-10-25, on the 0-100 Final Score: Strong Hire >= 70,
-// Medium Hire >= 60, Low Hire >= 40, Rejected below 40. A blank Final Score stays blank.
-function irpGenAiVerdictBand(finalScore) {
-  if (finalScore === "" || finalScore === null || finalScore === undefined) return "";
-  const n = Number(finalScore);
-  if (!Number.isFinite(n)) return "";
-  if (n >= 70) return "Strong Hire";
-  if (n >= 60) return "Medium Hire";
-  if (n >= 40) return "Low Hire";
-  return "Rejected";
-}
+const verdictBand = (finalScore) => bandFromCutoffs(finalScore, VERDICT_CUTOFFS.FRONTEND);
+const dsaVerdictBand = (finalScore) => bandFromCutoffs(finalScore, VERDICT_CUTOFFS.DSA);
+const sweVerdictBand = (finalScore) => bandFromCutoffs(finalScore, VERDICT_CUTOFFS.SWE);
+const backendVerdictBand = (finalScore) => bandFromCutoffs(finalScore, VERDICT_CUTOFFS.BACKEND);
+const irpGenAiVerdictBand = (finalScore) => bandFromCutoffs(finalScore, VERDICT_CUTOFFS.IRPGENAI);
 
 // IRP Gen AI's Clearance Status, rule given 2026-10-28: Strong/Medium Hire -> Cleared, Low Hire/
 // Rejected -> Not Cleared. Non-completed interviews pass the Interview App's raw status through
@@ -7379,7 +7365,7 @@ const ACADEMY_ROW_BUILDERS = {
   // Frontend Development's frontendDevLevel, don't assume the two stay in sync.
   "DSA:": (iv) => {
     const finalScore = scaleOutOfFiveToHundred(iv.finalVerdict);
-    const band = verdictBand(finalScore);
+    const band = dsaVerdictBand(finalScore);
     const common = academyCommonFields(iv);
     // See the matching comment in "FRONTEND:" — don't compute Verdict Band or Levels for a row
     // flagged _statusDataMismatch.
@@ -7492,6 +7478,136 @@ const ACADEMY_ROW_BUILDERS = {
     }, iv);
   },
 };
+
+// Read-only criteria shown by the "Criteria" button on each Interviews tab, keyed like
+// ACADEMY_ROW_BUILDERS. Verdict cutoffs come straight from VERDICT_CUTOFFS (the same table the
+// calculation uses); the Clearance/Levels wording mirrors the matching *ClearanceStatus / *Level
+// functions above — update the text here whenever one of those rules changes. Bucket B and C are
+// left out on purpose (asked 2026-11-12).
+const HIRE_BAND_CLEARANCE = (cut) => `Completed interview: ${cut.bands[0][0]} or ${cut.bands[1][0]} → Cleared; ${cut.bands[2][0]} or ${cut.below} → Not Cleared. Completed but no Final Score yet → "Completed".`;
+const INTERVIEW_CRITERIA = {
+  "FRONTEND:": {
+    finalScore: "Interview App's final rating (out of 5) × 20 → out of 100.",
+    verdict: VERDICT_CUTOFFS.FRONTEND,
+    blankOnMismatch: true,
+    clearance: HIRE_BAND_CLEARANCE(VERDICT_CUTOFFS.FRONTEND),
+    levels: [
+      ["L4", "HTML & CSS ≥ 4 AND JavaScript ≥ 4 AND React ≥ 4 AND Machine Coding ≥ 4"],
+      ["L3", "React ≥ 3 AND Machine Coding ≥ 3"],
+      ["L2", "JavaScript ≥ 3"],
+      ["L1", "HTML & CSS ≥ 3"],
+      ["Below L1", "none of the above"],
+    ],
+    levelsNote: "Checked top to bottom — the first rule that matches wins. Blank if any of the four ratings is missing.",
+  },
+  "DSA:": {
+    finalScore: "Interview App's final rating (out of 5) × 20 → out of 100.",
+    verdict: VERDICT_CUTOFFS.DSA,
+    blankOnMismatch: true,
+    clearance: HIRE_BAND_CLEARANCE(VERDICT_CUTOFFS.DSA),
+    levels: [
+      ["L4", "Problem 1 Approach ≥ 4 AND Problem 1 Code ≥ 4 AND Problem 2 Approach ≥ 4 AND Problem 2 Code ≥ 4 AND DSA Theory ≥ 4"],
+      ["L3", "Problem 2 Code ≥ 3 AND (75% × avg(Problem 2 Approach, Problem 2 Code) + 25% × DSA Theory) ≥ 3"],
+      ["L2", "Problem 1 Code ≥ 3 AND (75% × avg(Problem 1 Approach, Problem 1 Code) + 25% × DSA Theory) ≥ 3"],
+      ["Below L2", "none of the above"],
+    ],
+    levelsNote: "Checked top to bottom — the first rule that matches wins. Blank if any of the five ratings is missing.",
+  },
+  "SWE:": {
+    finalScore: "Interview App's final rating (out of 5) × 20 → out of 100.",
+    verdict: VERDICT_CUTOFFS.SWE,
+    blankOnMismatch: true,
+    clearance: HIRE_BAND_CLEARANCE(VERDICT_CUTOFFS.SWE),
+    levels: [
+      ["L3", "Core CS Fundamentals, SQL Query Task, OOP Concepts, OOP Design Task, Software Design & Clean Code and Code Review Exercise all ≥ 2.5"],
+      ["L2", "Core CS Fundamentals, SQL Query Task, OOP Concepts and OOP Design Task all ≥ 2.5"],
+      ["L1", "Core CS Fundamentals and SQL Query Task both ≥ 2.5"],
+      ["Below L1", "none of the above"],
+    ],
+    levelsNote: "Checked top to bottom — the first rule that matches wins. Blank if any of the six ratings is missing.",
+  },
+  "BACKEND:": {
+    finalScore: "Interview App's final rating (out of 5) × 20 → out of 100.",
+    verdict: VERDICT_CUTOFFS.BACKEND,
+    blankOnMismatch: true,
+    clearance: HIRE_BAND_CLEARANCE(VERDICT_CUTOFFS.BACKEND),
+    levels: [
+      ["L4", "Backend Foundations, CRUD Endpoint Task, Database & Auth, Debug/Fix Task, Backend Advanced and Production Backend all ≥ 2.5"],
+      ["L3", "Backend Foundations, CRUD Endpoint Task, Database & Auth, Debug/Fix Task and Backend Advanced all ≥ 2.5"],
+      ["L2", "Backend Foundations, CRUD Endpoint Task, Database & Auth and Debug/Fix Task all ≥ 2.5"],
+      ["L1", "Backend Foundations and CRUD Endpoint Task both ≥ 2.5"],
+      ["Below L1", "none of the above"],
+    ],
+    levelsNote: "Checked top to bottom — the first rule that matches wins. Blank if any of the six ratings is missing.",
+  },
+  "IRPL1:": {
+    finalScore: "Interview App's final rating, shown as-is (out of 5) — no old/new rubric weighting applied.",
+    verdict: null,
+    clearance: `Completed interview: Final Score ≥ 3.5 (70% of 5) → Cleared; below 3.5 → Not Cleared. Completed but no Final Score yet → "Completed".`,
+    levels: null,
+  },
+  "IRPGENAI:": {
+    finalScore: "Interview App's final rating (out of 5) × 20 → out of 100.",
+    verdict: VERDICT_CUTOFFS.IRPGENAI,
+    clearance: HIRE_BAND_CLEARANCE(VERDICT_CUTOFFS.IRPGENAI),
+    levels: null,
+  },
+};
+
+function InterviewCriteriaPanel({ criteria }) {
+  const h = { fontSize: 11, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: C.accentDark, margin: "18px 0 8px" };
+  const p = { fontSize: 13, color: C.text, lineHeight: 1.6, margin: 0 };
+  const cell = { border: `1px solid ${C.border}`, padding: "6px 10px", fontSize: 12.5, verticalAlign: "top" };
+  const { verdict, levels } = criteria;
+  return (
+    <div>
+      <div style={{ ...h, marginTop: 0 }}>Final Score</div>
+      <p style={p}>{criteria.finalScore}</p>
+
+      {verdict && (<>
+        <div style={h}>Verdict Band <span style={{ fontWeight: 600, textTransform: "none", letterSpacing: 0, color: C.muted }}>(on the 0–100 Final Score)</span></div>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <tbody>
+            {verdict.bands.map(([label, min], i) => (
+              <tr key={label}>
+                <td style={{ ...cell, fontWeight: 700, width: 140 }}>{label}</td>
+                <td style={cell}>{i === 0 ? `≥ ${min}` : `≥ ${min} and < ${verdict.bands[i - 1][1]}`}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ ...cell, fontWeight: 700 }}>{verdict.below}</td>
+              <td style={cell}>{`< ${verdict.bands[verdict.bands.length - 1][1]}`}</td>
+            </tr>
+          </tbody>
+        </table>
+      </>)}
+
+      <div style={h}>Clearance Status</div>
+      <p style={p}>{criteria.clearance}</p>
+
+      {levels && (<>
+        <div style={h}>Levels <span style={{ fontWeight: 600, textTransform: "none", letterSpacing: 0, color: C.muted }}>(on the section ratings, out of 5)</span></div>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <tbody>
+            {levels.map(([label, rule]) => (
+              <tr key={label}>
+                <td style={{ ...cell, fontWeight: 700, width: 90, whiteSpace: "nowrap" }}>{label}</td>
+                <td style={cell}>{rule}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {criteria.levelsNote && <p style={{ ...p, fontSize: 12, color: C.muted, marginTop: 6 }}>{criteria.levelsNote}</p>}
+      </>)}
+
+      <div style={h}>Other statuses</div>
+      <ul style={{ ...p, paddingLeft: 18 }}>
+        <li>Interviews that aren't completed (scheduled, no_show, cancelled, …) show the Interview App's status as-is in Clearance Status.</li>
+        <li>⚠️ Status/data mismatch: feedback was submitted but the interview isn't marked completed (partially completed interviews are exempt). The scores may belong to an earlier attempt{criteria.blankOnMismatch ? ", so Verdict Band and Levels are left blank for that row" : ""}.</li>
+      </ul>
+    </div>
+  );
+}
 
 // Slots shown in the stakeholder/ops stats overview at the top of the Interviews page.
 // "A:TR1" is deliberately excluded — its row builder above is a placeholder with no live
@@ -7986,6 +8102,8 @@ function InterviewsPage({ role, eligibility }) {
               exportLabel={`${activeBucket.label}${subTab ? ` - ${subTab}` : ""}`.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "")}
               canDelete={canDeleteInterview}
               onRequestDelete={setConfirmDeleteInterview}
+              criteria={INTERVIEW_CRITERIA[`${bucketTab}:${subTab}`]}
+              criteriaTitle={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`}
             />
           ) : (
             <EmptyState icon="🎤" title={`${activeBucket.label}${subTab ? ` – ${subTab}` : ""}`} sub="No data yet." />
