@@ -8048,7 +8048,10 @@ function InterviewStatsOverview({ academyInterviews, eligibility, cohorts, onSel
       .map(id => ({ id, label: cohortLabel(cohorts, id), list: onList.filter(e => (e.cohortId || null) === id) }))
       .sort((a, b) => (a.id ? 0 : 1) - (b.id ? 0 : 1) || a.label.localeCompare(b.label));
   };
-  const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 10px", borderBottom: `1px solid ${C.border}` };
+  // Header cells stick to the top of the table's own scroll area, so the column names stay in view
+  // while scrolling down through the templates. The bottom line is an inset shadow because a real
+  // border on a sticky cell scrolls away under border-collapse.
+  const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 10px", position: "sticky", top: 0, zIndex: 1, background: C.surfaceAlt, boxShadow: `inset 0 -1px 0 ${C.border}` };
   const tdStyle = { padding: "10px 10px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
 
   return (
@@ -8059,7 +8062,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, cohorts, onSel
       </div>
 
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
-        <div style={{ overflowX: "auto" }}>
+        <div style={{ overflow: "auto", maxHeight: "calc(100vh - 260px)", minHeight: 240 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: C.surfaceAlt }}>
