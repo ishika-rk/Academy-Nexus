@@ -8058,7 +8058,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, cohorts, onSel
     <div>
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 15, fontWeight: 800, color: C.text }}>Interview funnel, by template</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Eligible → Scheduled → Attempted → Cleared, in unique students. Click a row to open that template's table.</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Eligible → Scheduled → Attempted → Cleared, in unique students. Use <strong>Open table</strong> to see a template's interviews, and <strong>Split by cohort</strong> to break a template down by cohort.</div>
       </div>
 
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
@@ -8090,24 +8090,38 @@ function InterviewStatsOverview({ academyInterviews, eligibility, cohorts, onSel
                   .map(b => ({ label: b, value: stats.verdictCounts[b], color: VERDICT_BAND_HEX[b] }));
                 const levelKeys = Object.keys(stats.levelsCounts).sort();
                 const levelSegments = levelKeys.map((l, i) => ({ label: l, value: stats.levelsCounts[l], color: rampColor(LEVELS_RAMP, i, levelKeys.length) }));
-                const rowBg = sub ? C.surfaceAlt : "transparent";
+                // Rows don't navigate on click any more (a stray click on the name used to jump into
+                // the table) — "Open table" and "Split by cohort" are explicit buttons instead. An
+                // expanded template and its cohort rows share an accent rail down the left edge and a
+                // tinted background, so the group reads as one block.
+                const inGroup = sub || expanded;
+                const rowBg = sub ? C.accentLight : "transparent";
+                const firstCell = {
+                  ...tdStyle, color: C.text, width: 170, minWidth: 150,
+                  boxShadow: inGroup ? `inset 4px 0 0 ${C.accent}` : "none",
+                  paddingLeft: sub ? 26 : 12,
+                };
                 return (
-                  <tr
-                    key={key}
-                    onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
-                    style={{ cursor: "pointer", background: rowBg }}
-                    onMouseEnter={e => e.currentTarget.style.background = sub ? C.border : C.surfaceAlt}
-                    onMouseLeave={e => e.currentTarget.style.background = rowBg}
-                  >
-                    <td style={{ ...tdStyle, fontWeight: sub ? 600 : 700, color: C.text, width: 140, minWidth: 120, paddingLeft: sub ? 28 : 10 }}>
-                      {sub ? <span style={{ color: C.muted }}>↳ </span> : groups.length > 0 && (
-                        <button
-                          onClick={e => { e.stopPropagation(); toggleSlot(slot.slotKey); }}
-                          title={expanded ? "Hide cohorts" : "Split by cohort"}
-                          style={{ background: "none", border: "none", padding: "0 4px 0 0", cursor: "pointer", color: C.accent, fontSize: 11, fontFamily: "inherit" }}
-                        >{expanded ? "▾" : "▸"}</button>
-                      )}
-                      {label}
+                  <tr key={key} style={{ background: rowBg }}>
+                    <td style={firstCell}>
+                      {sub ? (<>
+                        <div style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", color: C.accent }}>Cohort</div>
+                        <div style={{ fontWeight: 700, fontSize: 12.5 }}>{label}</div>
+                      </>) : (<>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>{label}</div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, marginTop: 6 }}>
+                          <button
+                            onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
+                            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: C.accent, fontSize: 11.5, fontWeight: 700, fontFamily: "inherit" }}
+                          >Open table →</button>
+                          {groups.length > 0 && (
+                            <button
+                              onClick={() => toggleSlot(slot.slotKey)}
+                              style={{ background: expanded ? C.accent : C.surface, color: expanded ? "#fff" : C.accentDark, border: `1px solid ${C.accent}`, borderRadius: 999, padding: "3px 10px", cursor: "pointer", fontSize: 11.5, fontWeight: 700, fontFamily: "inherit", whiteSpace: "nowrap" }}
+                            >{expanded ? "▾ Hide cohorts" : `▸ Split by cohort (${groups.length})`}</button>
+                          )}
+                        </div>
+                      </>)}
                     </td>
                     <td style={tdStyle}>
                       {stats.eligible === null
