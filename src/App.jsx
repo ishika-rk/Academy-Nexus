@@ -4487,7 +4487,148 @@ function parseEligibilityPreview(text, existingIds) {
   });
 }
 
-function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUploadPart, onRestoreEligibilityUploadPart, onPurgeEligibilityUploadParts, resultsFiles, onUploadResultsFile, onUpdateResultsFile, onDeleteResultsFile, onRestoreResultsFile, onPurgeResultsFile, role }) {
+// Cohorts tag eligible students by where they came from (e.g. "Bucket B carry-over" vs "Offline
+// cleared – Oct 2026") so one template's interviews can be split by group. Names are compared
+// ignoring case, spaces and punctuation, so "bucket-b carry over" can't sit beside "Bucket B
+// carry-over" as a second cohort.
+const cohortKey = (name) => String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const NO_COHORT_LABEL = "No cohort";
+function cohortLabel(cohorts, id) {
+  if (!id) return NO_COHORT_LABEL;
+  return (cohorts || []).find(c => c.id === id)?.name || "(deleted cohort)";
+}
+
+// Archived cohorts are hidden from the choices, except the one already selected so it still reads.
+function CohortSelect({ cohorts, value, onChange, style, emptyLabel = NO_COHORT_LABEL, disabled }) {
+  const shown = (cohorts || []).filter(c => !c.archived || c.id === value);
+  return (
+    <select value={value || ""} onChange={e => onChange(e.target.value || null)} disabled={disabled} style={{ ...inputS, ...style }}>
+      <option value="">{emptyLabel}</option>
+      {shown.map(c => <option key={c.id} value={c.id}>{c.name}{c.archived ? " (archived)" : ""}</option>)}
+    </select>
+  );
+}
+
+function ManageCohortsModal({ cohorts, eligibility, uploads, onAdd, onUpdate, onDelete, onClose }) {
+  const [newName, setNewName] = useState("");
+  const [editing, setEditing] = useState(null); // { id, name } | null
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const usage = (id) => (eligibility || []).filter(e => e.cohortId === id).length;
+  const inUse = (id) => usage(id) > 0 || (uploads || []).some(u => u.cohortId === id);
+  const clash = (name, exceptId) => (cohorts || []).find(c => c.id !== exceptId && cohortKey(c.name) === cohortKey(name));
+
+  const run = async (fn) => {
+    setBusy(true); setError(null);
+    try { await fn(); } catch (err) { console.error("cohort update failed:", err); setError(err.message || String(err)); }
+    finally { setBusy(false); }
+  };
+  const add = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const dup = clash(name);
+    if (dup) return setError(`"${dup.name}" already exists${dup.archived ? " (archived — unarchive it instead)" : ""}.`);
+    run(async () => { await onAdd(name); setNewName(""); });
+  };
+  const saveRename = () => {
+    const name = editing.name.trim();
+    if (!name) return setError("Name can't be empty.");
+    const dup = clash(name, editing.id);
+    if (dup) return setError(`"${dup.name}" already exists.`);
+    run(async () => { await onUpdate(editing.id, { name }); setEditing(null); });
+  };
+
+  const cell = { border: `1px solid ${C.border}`, padding: "8px 10px", fontSize: 12.5, verticalAlign: "middle" };
+  const th = { ...cell, textAlign: "left", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.6, color: C.muted };
+  return (
+    <Modal title="Manage Cohorts" onClose={onClose} width={640}>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.6 }}>
+        Cohorts group eligible students by where they came from, so a template's interviews and stats can be split by group. Renaming a cohort updates every student tagged with it. A cohort that's in use can only be archived — it's hidden from new choices but stays on its students.
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <input value={newName} onChange={e => { setNewName(e.target.value); setError(null); }} onKeyDown={e => e.key === "Enter" && add()} placeholder="New cohort name, e.g. Bucket B carry-over" style={{ ...inputS, flex: 1 }} />
+        <Btn onClick={add} disabled={busy || !newName.trim()}>Add</Btn>
+      </div>
+      {error && <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{error}</div>}
+      {(cohorts || []).length === 0 ? (
+        <div style={{ fontSize: 12, color: C.muted, padding: "12px 0" }}>No cohorts yet — add the first one above.</div>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: C.surfaceAlt }}>
+              <th style={th}>Cohort</th>
+              <th style={{ ...th, width: 90 }}>Students</th>
+              <th style={{ ...cell, width: "1px" }} />
+            </tr>
+          </thead>
+          <tbody>
+            {cohorts.map(c => (
+              <tr key={c.id} style={{ opacity: c.archived ? 0.6 : 1 }}>
+                <td style={cell}>
+                  {editing?.id === c.id ? (
+                    <input autoFocus value={editing.name} onChange={e => { setEditing({ ...editing, name: e.target.value }); setError(null); }} onKeyDown={e => { if (e.key === "Enter") saveRename(); if (e.key === "Escape") setEditing(null); }} style={inputS} />
+                  ) : (
+                    <span style={{ fontWeight: 700, color: C.text }}>{c.name}{c.archived && <span style={{ fontWeight: 400, color: C.muted }}> · archived</span>}</span>
+                  )}
+                </td>
+                <td style={cell}>{usage(c.id)}</td>
+                <td style={cell}>
+                  <div style={{ display: "flex", gap: 6, whiteSpace: "nowrap" }}>
+                    {editing?.id === c.id ? (<>
+                      <Btn size="sm" onClick={saveRename} disabled={busy}>Save</Btn>
+                      <Btn variant="secondary" size="sm" onClick={() => setEditing(null)}>Cancel</Btn>
+                    </>) : (<>
+                      <Btn variant="secondary" size="sm" onClick={() => { setEditing({ id: c.id, name: c.name }); setError(null); }}>Rename</Btn>
+                      <Btn variant="secondary" size="sm" disabled={busy} onClick={() => run(() => onUpdate(c.id, { archived: !c.archived }))}>{c.archived ? "Unarchive" : "Archive"}</Btn>
+                      {!inUse(c.id) && <Btn variant="danger" size="sm" disabled={busy} onClick={() => run(() => onDelete(c.id))}>Delete</Btn>}
+                    </>)}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Modal>
+  );
+}
+
+// Sets one cohort on every student an upload put on the list. Students whose cohort was changed by
+// hand keep theirs unless "also change" is ticked.
+function SetUploadCohortModal({ upload, cohorts, eligibility, onSave, onClose }) {
+  const [cohortId, setCohortId] = useState(upload.cohortId || null);
+  const [overwriteManual, setOverwriteManual] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const live = (eligibility || []).filter(e => e.uploadId === upload.id);
+  const manual = live.filter(e => e.cohortManual && (e.cohortId || null) !== (cohortId || null));
+  const save = async () => {
+    setBusy(true); setError(null);
+    try { await onSave(upload, cohortId, { overwriteManual }); onClose(); }
+    catch (err) { console.error("set upload cohort failed:", err); setError(err.message || String(err)); setBusy(false); }
+  };
+  return (
+    <Modal title="Set cohort for upload" onClose={onClose} width={480}>
+      <div style={{ fontSize: 13, color: C.text, marginBottom: 4, fontWeight: 700 }}>{upload.fileName || "—"}</div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 14 }}>{live.length} student{live.length === 1 ? "" : "s"} currently on the list from this upload</div>
+      <CohortSelect cohorts={cohorts} value={cohortId} onChange={setCohortId} />
+      {manual.length > 0 && (
+        <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: C.text, marginTop: 12, lineHeight: 1.5, cursor: "pointer" }}>
+          <input type="checkbox" checked={overwriteManual} onChange={e => setOverwriteManual(e.target.checked)} style={{ marginTop: 3 }} />
+          <span>{manual.length} student{manual.length === 1 ? " has" : "s have"} a cohort set individually and won't be changed. Tick to change {manual.length === 1 ? "it" : "them"} too.</span>
+        </label>
+      )}
+      {error && <div style={{ fontSize: 12, color: C.red, marginTop: 10 }}>{error}</div>}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, onSendToInterview, eligibility, eligibilityUploads, cohorts, onAddCohort, onUpdateCohort, onDeleteCohort, onSetUploadCohort, onSetStudentsCohort, onImportEligibility, onDeleteEligibility, onDeleteEligibilityUploadPart, onRestoreEligibilityUploadPart, onPurgeEligibilityUploadParts, resultsFiles, onUploadResultsFile, onUpdateResultsFile, onDeleteResultsFile, onRestoreResultsFile, onPurgeResultsFile, role }) {
   const [programTab, setProgramTab] = useState("eligibility");
   const [resultsPage, setResultsPage] = useState(1);
   const RESULTS_PAGE_SIZE = 10;
@@ -4504,6 +4645,13 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
   const [eligPreview, setEligPreview] = useState(null); // { fileName, rows } from parseEligibilityPreview
   const [eligPreviewErrorsOnly, setEligPreviewErrorsOnly] = useState(false);
   const [restoringId, setRestoringId] = useState(null);
+  const [showManageCohorts, setShowManageCohorts] = useState(false);
+  const [cohortUpload, setCohortUpload] = useState(null); // upload whose cohort is being set
+  const [eligImportCohort, setEligImportCohort] = useState(null);
+  const [eligCohortFilter, setEligCohortFilter] = useState(""); // "" = all, "__none" = no cohort, else cohort id
+  const [eligSelected, setEligSelected] = useState(new Set());
+  const [bulkCohort, setBulkCohort] = useState(null);
+  const [cohortSaving, setCohortSaving] = useState(false);
   const fileInputRef = useRef(null);
 
   // Permanently deletes uploads that have sat in Deleted past the retention window. Runs from
@@ -4532,11 +4680,12 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     ...(can(role, "resultsDirectory.read") || can(role, "resultsDirectory.write") ? [{ id: "directory", label: "Results Directory" }] : []),
   ];
   const isEligTab = programTab === "eligibility";
-  useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); }, [programTab, eligTemplateFilter, eligSearch]);
+  useEffect(() => { setResultsPage(1); setSelectedIds(new Set()); setEligSelected(new Set()); }, [programTab, eligTemplateFilter, eligSearch, eligCohortFilter]);
 
   const tabResults = isEligTab
     ? (eligibility || [])
         .filter(e => e.eligible !== false && (!eligTemplateFilter || e.templateSlot === eligTemplateFilter))
+        .filter(e => !eligCohortFilter || (eligCohortFilter === "__none" ? !e.cohortId : e.cohortId === eligCohortFilter))
         .filter(e => {
           const q = eligSearch.trim().toLowerCase();
           return !q || [e.name, e.studentId, e.email, e.phone].some(v => (v || "").toLowerCase().includes(q));
@@ -4579,7 +4728,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
     try {
       await onImportEligibility(
         valid.map(r => ({ id: r.id, data: { studentId: r.studentId, name: r.name || "", phone: r.phone || "", email: r.email || "", templateSlot: r.templateSlot, eligible: true } })),
-        { fileName: eligPreview.fileName },
+        { fileName: eligPreview.fileName, cohortId: eligImportCohort },
       );
       const updated = valid.filter(r => r.action === "update").length;
       setImportStatus({ added: valid.length - updated, updated, errors });
@@ -4698,11 +4847,14 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
           )}
           {isEligTab && can(role, "results.write") && (
             <>
+              <button onClick={() => setShowManageCohorts(true)} title="Add, rename or archive cohorts" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit" }}>
+                Manage Cohorts
+              </button>
               <button onClick={downloadTemplate} title="Download CSV template" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Template
               </button>
-              <button onClick={() => { setImportStatus(null); setEligPreview(null); setEligTemplatePick(eligTemplateFilter); setShowImportModal(true); }} title="Import CSV" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <button onClick={() => { setImportStatus(null); setEligPreview(null); setEligTemplatePick(eligTemplateFilter); setEligImportCohort(null); setShowImportModal(true); }} title="Import CSV" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 9, padding: "8px 14px", fontSize: 12, fontWeight: 600, color: C.text, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 10V2M5 5l3-3 3 3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 Import CSV
               </button>
@@ -4771,6 +4923,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                     <th style={thBase}>Uploaded On</th>
                     <th style={thBase}>File</th>
                     <th style={thBase}>Uploaded By</th>
+                    <th style={thBase}>Cohort</th>
                     <th style={thBase}>Interview Template</th>
                     <th style={thBase}>Eligible Students</th>
                     {deleted && <th style={thBase}>Deleted</th>}
@@ -4798,6 +4951,12 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                               )}
                             </td>
                             <td rowSpan={span} style={cell}>{u.uploadedBy || "—"}</td>
+                            <td rowSpan={span} style={cell}>
+                              <div style={{ color: u.cohortId ? C.text : C.muted, fontWeight: u.cohortId ? 700 : 400 }}>{cohortLabel(cohorts, u.cohortId)}</div>
+                              {canWrite && !deleted && (
+                                <button onClick={() => setCohortUpload(u)} style={{ background: "none", border: "none", padding: 0, marginTop: 2, fontSize: 11, fontWeight: 700, color: C.accent, cursor: "pointer", fontFamily: "inherit" }}>Set cohort</button>
+                              )}
+                            </td>
                           </>)}
                           <td style={cell}>{slotLabel(pt.slotKey)}</td>
                           <td style={{ ...cell, whiteSpace: "nowrap" }}>{pt.count === null ? "—" : <><strong>{pt.count}</strong> students</>}</td>
@@ -4865,6 +5024,11 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
               )}
             </div>
             {templateFilterSelect}
+            <select value={eligCohortFilter} onChange={e => setEligCohortFilter(e.target.value)} style={{ ...inputS, width: 220 }}>
+              <option value="">All cohorts</option>
+              <option value="__none">{NO_COHORT_LABEL}</option>
+              {(cohorts || []).map(c => <option key={c.id} value={c.id}>{c.name}{c.archived ? " (archived)" : ""}</option>)}
+            </select>
             </div>
             <div style={{ fontSize: 12, color: C.muted }}>
               <strong style={{ color: C.text }}>{tabResults.length}</strong> {eligSearch.trim() ? "matching" : "eligible"} students
@@ -4874,13 +5038,35 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
             eligSearch.trim()
               ? <EmptyState icon="🔍" title="No matching students" sub={`No eligible student matches "${eligSearch.trim()}"${eligTemplateFilter ? ` for ${slotLabel(eligTemplateFilter)}` : ""}.`} />
               : <EmptyState icon="🎯" title="No eligibility uploaded yet" sub="Upload a CSV of which students are eligible for each interview template — it feeds the funnel on the Interviews Overview." />
-          ) : (
+          ) : (<>
+            {eligSelected.size > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12, fontSize: 12, color: C.accentDark, background: C.accentLight, border: `1px solid ${C.accent}`, borderRadius: 7, padding: "8px 12px" }}>
+                <strong>{eligSelected.size} selected</strong>
+                <span>Set cohort to</span>
+                <CohortSelect cohorts={cohorts} value={bulkCohort} onChange={setBulkCohort} style={{ width: 220 }} />
+                <Btn size="sm" disabled={cohortSaving} onClick={async () => {
+                  setCohortSaving(true);
+                  try { await onSetStudentsCohort([...eligSelected], bulkCohort); setEligSelected(new Set()); }
+                  catch (err) { console.error("set cohort failed:", err); alert(`Couldn't set cohort: ${err.message || err}`); }
+                  finally { setCohortSaving(false); }
+                }}>{cohortSaving ? "Saving…" : "Apply"}</Btn>
+                <button onClick={() => setEligSelected(new Set())} style={{ marginLeft: "auto", background: "none", border: "none", color: C.muted, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Clear selection</button>
+              </div>
+            )}
             <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr style={{ background: C.surfaceAlt }}>
+                    {can(role, "results.write") && (
+                      <th style={{ ...thBase, width: "1px" }}>
+                        <input type="checkbox" title="Select all on this page"
+                          checked={pageRows.length > 0 && pageRows.every(e => eligSelected.has(e.id))}
+                          onChange={ev => setEligSelected(prev => { const next = new Set(prev); pageRows.forEach(e => (ev.target.checked ? next.add(e.id) : next.delete(e.id))); return next; })} />
+                      </th>
+                    )}
                     <th style={thBase}>Student</th>
                     <th style={thBase}>Interview Template</th>
+                    <th style={thBase}>Cohort</th>
                     <th style={thBase}>Uploaded</th>
                     {can(role, "results.write") && <th style={{ ...thBase, width: "1px" }} />}
                   </tr>
@@ -4890,12 +5076,23 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                     const cell = { verticalAlign: "middle", background: i % 2 === 0 ? "#fff" : C.surfaceAlt, border: `1px solid ${C.border}`, padding: "8px 12px" };
                     return (
                       <tr key={e.id}>
+                        {can(role, "results.write") && (
+                          <td style={cell}>
+                            <input type="checkbox" checked={eligSelected.has(e.id)} onChange={() => setEligSelected(prev => { const next = new Set(prev); if (next.has(e.id)) next.delete(e.id); else next.add(e.id); return next; })} />
+                          </td>
+                        )}
                         <td style={cell}>
                           <div style={{ fontWeight: 700, color: C.text }}>{e.name || "—"}</div>
                           <div style={{ fontSize: 11, color: C.muted }}>{e.studentId}</div>
                           {missingPiFields(e).length > 0 && <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: 2 }}>⚠️ Missing: {missingPiFields(e).join(", ")}</div>}
                         </td>
                         <td style={cell}>{slotLabel(e.templateSlot)}</td>
+                        <td style={cell}>
+                          {can(role, "results.write")
+                            ? <CohortSelect cohorts={cohorts} value={e.cohortId} style={{ width: 200, padding: "5px 8px", fontSize: 12 }} onChange={id => onSetStudentsCohort([e.id], id).catch(err => { console.error("set cohort failed:", err); alert(`Couldn't set cohort: ${err.message || err}`); })} />
+                            : <span style={{ color: e.cohortId ? C.text : C.muted }}>{cohortLabel(cohorts, e.cohortId)}</span>}
+                          {e.cohortManual && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }} title="Changed for this student only — re-tagging their upload won't change it">set individually</div>}
+                        </td>
                         <td style={cell}>{e.importedAt ? fmtDate(e.importedAt.slice(0, 10)) : "—"}</td>
                         {can(role, "results.write") && (
                           <td style={cell}>
@@ -4910,7 +5107,7 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                 </tbody>
               </table>
             </div>
-          )}
+          </>)}
           {totalPages > 1 && (
             <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 16 }}>
               <Btn variant="secondary" size="sm" onClick={() => setResultsPage(p => Math.max(1, p - 1))} disabled={resultsPage === 1}>Prev</Btn>
@@ -5179,6 +5376,11 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
                       </table>
                     </div>
                   )}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: C.text }}>
+                    <strong>Cohort for this file</strong>
+                    <CohortSelect cohorts={cohorts} value={eligImportCohort} onChange={setEligImportCohort} style={{ width: 260 }} />
+                    <span style={{ color: C.muted }}>Applied to every student in the file. Manage the list with <strong>Manage Cohorts</strong>.</span>
+                  </div>
                   <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                     <Btn variant="secondary" onClick={() => { setEligPreview(null); setImportStatus(null); }}>Choose Another File</Btn>
                     <Btn onClick={confirmEligibilityUpload} disabled={validRows.length === 0}>
@@ -5222,6 +5424,13 @@ function ResultsPage({ results, onSaveResult, onUpdateResult, onDeleteResult, on
             )}
           </div>
         </Modal>
+      )}
+
+      {showManageCohorts && (
+        <ManageCohortsModal cohorts={cohorts} eligibility={eligibility} uploads={eligibilityUploads} onAdd={onAddCohort} onUpdate={onUpdateCohort} onDelete={onDeleteCohort} onClose={() => setShowManageCohorts(false)} />
+      )}
+      {cohortUpload && (
+        <SetUploadCohortModal upload={cohortUpload} cohorts={cohorts} eligibility={eligibility} onSave={onSetUploadCohort} onClose={() => setCohortUpload(null)} />
       )}
 
       {confirmDelete && (
@@ -6235,7 +6444,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
   // Status/Final Status/Clearance Status, Verdict Band, and Levels all get the same
   // Google-Sheets-style checkbox filter — whichever of these keys are present in this bucket's
   // column set (not every bucket has all of them, e.g. only Frontend Development has Levels).
-  const FILTERABLE_KEYS = ["status", "finalStatus", "verdict", "levels"];
+  const FILTERABLE_KEYS = ["status", "finalStatus", "verdict", "levels", "cohort"];
   const filterableCols = columns.filter(c => FILTERABLE_KEYS.includes(c.key));
   const filterOptionsByKey = Object.fromEntries(filterableCols.map(c => [
     c.key,
@@ -7820,8 +8029,25 @@ function FunnelCount({ value, of, ofLabel }) {
 // One row per slot rather than one card per slot scales to however many interview types get
 // added later (just more table rows), and Clearance / Verdict Band / Levels each get their own
 // column instead of badges piled together with no way to tell which stat is which.
-function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }) {
+// Each template row can expand into one sub-row per cohort its eligible students are tagged with
+// (plus "No cohort" for untagged ones). A sub-row is the same funnel computed against only that
+// cohort's slice of the eligibility list, so the sub-rows' Eligible counts add up to the template's.
+function InterviewStatsOverview({ academyInterviews, eligibility, cohorts, onSelectSlot }) {
   const [notOnListView, setNotOnListView] = useState(null); // { label, students } | null
+  const [expandedSlots, setExpandedSlots] = useState(new Set());
+  const toggleSlot = (slotKey) => setExpandedSlots(prev => {
+    const next = new Set(prev);
+    if (next.has(slotKey)) next.delete(slotKey); else next.add(slotKey);
+    return next;
+  });
+  const cohortGroups = (slotKey) => {
+    const onList = (eligibility || []).filter(e => e.templateSlot === slotKey && e.eligible);
+    if (!onList.some(e => e.cohortId)) return [];
+    const ids = [...new Set(onList.map(e => e.cohortId || null))];
+    return ids
+      .map(id => ({ id, label: cohortLabel(cohorts, id), list: onList.filter(e => (e.cohortId || null) === id) }))
+      .sort((a, b) => (a.id ? 0 : 1) - (b.id ? 0 : 1) || a.label.localeCompare(b.label));
+  };
   const thStyle = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase", color: C.muted, textAlign: "left", padding: "8px 10px", borderBottom: `1px solid ${C.border}` };
   const tdStyle = { padding: "10px 10px", verticalAlign: "top", borderBottom: `1px solid ${C.border}` };
 
@@ -7851,28 +8077,40 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
               </tr>
             </thead>
             <tbody>
-              {INTERVIEW_STATS_SLOTS.map(slot => {
-                const stats = computeSlotStats(academyInterviews, slot.slotKey, eligibility || []);
+              {INTERVIEW_STATS_SLOTS.flatMap(slot => {
+                const groups = cohortGroups(slot.slotKey);
+                const expanded = groups.length > 0 && expandedSlots.has(slot.slotKey);
+                const renderRow = (stats, { key, sub, label }) => {
                 const plain = (n) => <strong style={{ fontSize: 13, color: C.text }}>{n}</strong>;
                 const verdictSegments = VERDICT_BAND_ORDER
                   .filter(b => stats.verdictCounts[b])
                   .map(b => ({ label: b, value: stats.verdictCounts[b], color: VERDICT_BAND_HEX[b] }));
                 const levelKeys = Object.keys(stats.levelsCounts).sort();
                 const levelSegments = levelKeys.map((l, i) => ({ label: l, value: stats.levelsCounts[l], color: rampColor(LEVELS_RAMP, i, levelKeys.length) }));
+                const rowBg = sub ? C.surfaceAlt : "transparent";
                 return (
                   <tr
-                    key={slot.slotKey}
+                    key={key}
                     onClick={() => onSelectSlot(slot.bucketId, slot.subTab)}
-                    style={{ cursor: "pointer" }}
-                    onMouseEnter={e => e.currentTarget.style.background = C.surfaceAlt}
-                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                    style={{ cursor: "pointer", background: rowBg }}
+                    onMouseEnter={e => e.currentTarget.style.background = sub ? C.border : C.surfaceAlt}
+                    onMouseLeave={e => e.currentTarget.style.background = rowBg}
                   >
-                    <td style={{ ...tdStyle, fontWeight: 700, color: C.text, width: 140, minWidth: 120 }}>{slot.label}</td>
+                    <td style={{ ...tdStyle, fontWeight: sub ? 600 : 700, color: C.text, width: 140, minWidth: 120, paddingLeft: sub ? 28 : 10 }}>
+                      {sub ? <span style={{ color: C.muted }}>↳ </span> : groups.length > 0 && (
+                        <button
+                          onClick={e => { e.stopPropagation(); toggleSlot(slot.slotKey); }}
+                          title={expanded ? "Hide cohorts" : "Split by cohort"}
+                          style={{ background: "none", border: "none", padding: "0 4px 0 0", cursor: "pointer", color: C.accent, fontSize: 11, fontFamily: "inherit" }}
+                        >{expanded ? "▾" : "▸"}</button>
+                      )}
+                      {label}
+                    </td>
                     <td style={tdStyle}>
                       {stats.eligible === null
                         ? <span style={{ color: C.muted }} title="No eligibility uploaded for this template yet (Results → Interview Eligibility)">—</span>
                         : <strong style={{ fontSize: 13, color: C.text }}>{stats.eligible}</strong>}
-                      {stats.notOnList > 0 && (
+                      {!sub && stats.notOnList > 0 && (
                         <div
                           onClick={e => { e.stopPropagation(); setNotOnListView({ label: slot.label, students: stats.notOnListStudents }); }}
                           style={{ fontSize: 10.5, color: C.red, marginTop: 2, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}
@@ -7902,12 +8140,20 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
                     </td>
                   </tr>
                 );
+                };
+                const rows = [renderRow(computeSlotStats(academyInterviews, slot.slotKey, eligibility || []), { key: slot.slotKey, sub: false, label: slot.label })];
+                if (expanded) {
+                  for (const g of groups) {
+                    rows.push(renderRow(computeSlotStats(academyInterviews, slot.slotKey, g.list), { key: `${slot.slotKey}|${g.id || "none"}`, sub: true, label: g.label }));
+                  }
+                }
+                return rows;
               })}
             </tbody>
           </table>
         </div>
         <div style={{ fontSize: 10.5, color: C.muted, padding: "8px 14px", background: C.surfaceAlt, borderTop: `1px solid ${C.border}` }}>
-          All counts are unique students (matched by Student UID). Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted. Attempted = completed or partially completed at least one interview (no-show/cancelled don't count); Clearance, Verdict Band and Levels use each student's latest decided attempt. Scheduled / Cancelled / No-Show = never attempted, latest interview has that status (Scheduled = booked, not happened yet). Partially Completed = attempted, but never fully completed. Pending = Eligible − Attempted.
+          All counts are unique students (matched by Student UID). Eligible comes from Results → Interview Eligibility — once a template has an upload, only students on its list are counted. Attempted = completed or partially completed at least one interview (no-show/cancelled don't count); Clearance, Verdict Band and Levels use each student's latest decided attempt. Scheduled / Cancelled / No-Show = never attempted, latest interview has that status (Scheduled = booked, not happened yet). Partially Completed = attempted, but never fully completed. Pending = Eligible − Attempted. ▸ splits a template by cohort (set in Results → Interview Eligibility).
         </div>
       </div>
       {notOnListView && (
@@ -7959,7 +8205,7 @@ function InterviewStatsOverview({ academyInterviews, eligibility, onSelectSlot }
   );
 }
 
-function InterviewsPage({ role, eligibility }) {
+function InterviewsPage({ role, eligibility, cohorts }) {
   // Overview is the landing tab — it's also a fix, not just a preference: "A" (the old default)
   // lands on Bucket A / NxtMock, which has no live data wired up at all (see ACADEMY_ROW_BUILDERS),
   // so every fresh visit used to open on an empty table.
@@ -8050,9 +8296,26 @@ function InterviewsPage({ role, eligibility }) {
 
   const slotKey = `${bucketTab}:${subTab}`;
   const academyRowBuilder = ACADEMY_ROW_BUILDERS[slotKey];
+  // Cohort comes from the student's eligibility record for this template (matched by UID, same as
+  // the Overview funnel). Only shown once the template has an eligibility list at all — before
+  // that every row would just read "Not on eligibility list".
+  const slotEligibility = (eligibility || []).filter(e => e.templateSlot === slotKey && e.eligible !== false);
+  const eligByUid = new Map(slotEligibility.map(e => [normUid(e.studentId), e]));
+  const showCohort = !!academyRowBuilder && slotEligibility.length > 0;
   const activeRows = academyRowBuilder
-    ? academyInterviews.filter(iv => parseAcademySlot(iv.templateName) === slotKey).map(academyRowBuilder)
+    ? academyInterviews.filter(iv => parseAcademySlot(iv.templateName) === slotKey).map(iv => {
+        const row = academyRowBuilder(iv);
+        if (!showCohort) return row;
+        const e = eligByUid.get(normUid(iv.candidateUid));
+        return { ...row, cohort: e ? cohortLabel(cohorts, e.cohortId) : "Not on eligibility list" };
+      })
     : (activeTable?.rows || []);
+  const tableColumns = activeTable && showCohort
+    ? (() => {
+        const at = activeTable.columns.findIndex(c => c.key === "candidateName") + 1;
+        return [...activeTable.columns.slice(0, at), { key: "cohort", label: "Cohort" }, ...activeTable.columns.slice(at)];
+      })()
+    : activeTable?.columns;
   const syncBannerError = listenerError || syncError;
 
   return (
@@ -8082,7 +8345,7 @@ function InterviewsPage({ role, eligibility }) {
       </div>
 
       {bucketTab === "OVERVIEW" ? (
-        <InterviewStatsOverview academyInterviews={academyInterviews} eligibility={eligibility} onSelectSlot={jumpToSlot} />
+        <InterviewStatsOverview academyInterviews={academyInterviews} eligibility={eligibility} cohorts={cohorts} onSelectSlot={jumpToSlot} />
       ) : (
         <>
           {activeBucket.subheaders.length > 0 && (
@@ -8096,7 +8359,7 @@ function InterviewsPage({ role, eligibility }) {
           {activeTable ? (
             <InterviewDataTable
               key={`${bucketTab}:${subTab}`}
-              columns={activeTable.columns}
+              columns={tableColumns}
               rows={activeRows}
               source={activeTable.source}
               exportLabel={`${activeBucket.label}${subTab ? ` - ${subTab}` : ""}`.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "")}
@@ -9062,6 +9325,7 @@ export default function App() {
   const [results, setResults] = useState([]);
   const [eligibility, setEligibility] = useState([]);
   const [eligibilityUploads, setEligibilityUploads] = useState([]);
+  const [cohorts, setCohorts] = useState([]);
   const [resultsFiles, setResultsFiles] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [domainLists, setDomainLists] = useState({});
@@ -9125,6 +9389,12 @@ export default function App() {
       ),
       onSnapshot(collection(db, "eligibilityUploads"), snap =>
         setEligibilityUploads(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      ),
+      // Needs its own match block in firestore.rules (added 2026-11-13) — logged rather than
+      // thrown so the rest of the app keeps working until the rules are published.
+      onSnapshot(collection(db, "cohorts"), snap =>
+        setCohorts(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.name || "").localeCompare(b.name || ""))),
+        err => console.error("cohorts listener failed:", err)
       ),
       onSnapshot(collection(db, "resultsFiles"), snap =>
         setResultsFiles(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -9325,10 +9595,12 @@ export default function App() {
   // Each upload also gets its own eligibilityUploads doc holding a snapshot of exactly the rows it
   // wrote, so any past upload can be re-downloaded as-is even after later uploads overwrite the
   // live per-student docs.
-  const onImportEligibility = async (records, { fileName }) => {
+  // cohortId (optional) tags every student in the file; a re-upload replaces a student's cohort
+  // like it replaces their other details, including one set by hand (cohortManual).
+  const onImportEligibility = async (records, { fileName, cohortId }) => {
     const uploadedAt = new Date().toISOString();
     const uploadRef = await addDoc(collection(db, "eligibilityUploads"), {
-      fileName, uploadedAt, uploadedBy: currentUser?.email || "",
+      fileName, uploadedAt, uploadedBy: currentUser?.email || "", cohortId: cohortId || null,
       rowCount: records.length,
       eligibleCount: records.filter(r => r.data.eligible).length,
       templateSlots: [...new Set(records.map(r => r.data.templateSlot))],
@@ -9336,12 +9608,41 @@ export default function App() {
     });
     for (let i = 0; i < records.length; i += 450) {
       const batch = writeBatch(db);
-      records.slice(i, i + 450).forEach(r => batch.set(doc(db, "interviewEligibility", r.id), { ...r.data, importedAt: uploadedAt, uploadId: uploadRef.id }, { merge: true }));
+      records.slice(i, i + 450).forEach(r => batch.set(doc(db, "interviewEligibility", r.id), { ...r.data, importedAt: uploadedAt, uploadId: uploadRef.id, cohortId: cohortId || null, cohortManual: false }, { merge: true }));
       await batch.commit();
     }
   };
   const onDeleteEligibility = async (id) => {
     await deleteDoc(doc(db, "interviewEligibility", id));
+  };
+
+  // Cohorts: a shared list of names students are tagged with (by id, so a rename carries over to
+  // everyone tagged). In-use cohorts are archived rather than deleted — see ManageCohortsModal.
+  const onAddCohort = async (name) => {
+    await addDoc(collection(db, "cohorts"), { name, archived: false, createdAt: new Date().toISOString(), createdBy: currentUser?.email || "" });
+  };
+  const onUpdateCohort = async (id, patch) => {
+    await updateDoc(doc(db, "cohorts", id), patch);
+  };
+  const onDeleteCohort = async (id) => {
+    await deleteDoc(doc(db, "cohorts", id));
+  };
+  const writeEligibilityPatches = async (ids, patch) => {
+    for (let i = 0; i < ids.length; i += 450) {
+      const batch = writeBatch(db);
+      ids.slice(i, i + 450).forEach(id => batch.update(doc(db, "interviewEligibility", id), patch));
+      await batch.commit();
+    }
+  };
+  // Tags every student currently on the list through this upload. Students whose cohort was set
+  // by hand keep it unless overwriteManual.
+  const onSetUploadCohort = async (upload, cohortId, { overwriteManual }) => {
+    await updateDoc(doc(db, "eligibilityUploads", upload.id), { cohortId: cohortId || null });
+    const ids = eligibility.filter(e => e.uploadId === upload.id && (overwriteManual || !e.cohortManual)).map(e => e.id);
+    await writeEligibilityPatches(ids, { cohortId: cohortId || null, cohortManual: false });
+  };
+  const onSetStudentsCohort = async (ids, cohortId) => {
+    await writeEligibilityPatches(ids, { cohortId: cohortId || null, cohortManual: true });
   };
   // Rebuilds the live interviewEligibility docs for the given student+template ids from whichever
   // non-deleted upload most recently contained each one; an id no active upload contains is
@@ -9361,7 +9662,7 @@ export default function App() {
         if (row && (!best || (a.u.uploadedAt || "") > (best.u.uploadedAt || ""))) best = { u: a.u, row };
       }
       ops.push(best
-        ? (b) => b.set(doc(db, "interviewEligibility", id), { ...best.row, phone: best.row.phone || "", eligible: true, importedAt: best.u.uploadedAt, uploadId: best.u.id })
+        ? (b) => b.set(doc(db, "interviewEligibility", id), { ...best.row, phone: best.row.phone || "", eligible: true, importedAt: best.u.uploadedAt, uploadId: best.u.id, cohortId: best.u.cohortId || null, cohortManual: false })
         : (b) => b.delete(doc(db, "interviewEligibility", id)));
     }
     for (let i = 0; i < ops.length; i += 450) {
@@ -9624,8 +9925,8 @@ export default function App() {
           {page === "exams" && <ExamDetailsPage domainLists={domainLists} onSaveTabDomains={onSaveTabDomains} exams={exams} onSaveExam={onSaveExam} onDeleteExam={onDeleteExam} onUndoDelete={onUndoDelete} onNotify={onNotify} onCancelExam={onCancelExam} uploads={uploads} onAddUpload={onAddUpload} onDeleteUpload={onDeleteUpload} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} expenses={expenses} onSaveExpense={onSaveExpense} />}
           {page === "configs" && <ConfigLibraryPage configEntries={configEntries} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} onDeleteConfigEntry={onDeleteConfigEntry} exams={exams} role={role} notifications={notifications} onAddNotification={onAddNotification} onMarkNotifRead={onMarkNotifRead} onMarkAllNotifsRead={onMarkAllNotifsRead} currentUserEmail={currentUser?.email} />}
           {page === "generate" && <AssessmentGenPage exams={exams} configEntries={configEntries} uploads={uploads} assessments={publishedAssessments} onAddAssessment={onAddAssessment} onUpdateAssessment={onUpdateAssessment} onSaveConfigEntry={onSaveConfigEntry} onUpdateConfigEntry={onUpdateConfigEntry} />}
-          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUploadPart={onDeleteEligibilityUploadPart} onRestoreEligibilityUploadPart={onRestoreEligibilityUploadPart} onPurgeEligibilityUploadParts={onPurgeEligibilityUploadParts} resultsFiles={resultsFiles} onUploadResultsFile={onUploadResultsFile} onUpdateResultsFile={onUpdateResultsFile} onDeleteResultsFile={onDeleteResultsFile} onRestoreResultsFile={onRestoreResultsFile} onPurgeResultsFile={onPurgeResultsFile} role={role} />}
-          {page === "interviews" && <InterviewsPage role={role} eligibility={eligibility} />}
+          {page === "results" && <ResultsPage results={results} onSaveResult={onSaveResult} onUpdateResult={onUpdateResult} onDeleteResult={onDeleteResult} onSendToInterview={onSendToInterview} eligibility={eligibility} eligibilityUploads={eligibilityUploads} cohorts={cohorts} onAddCohort={onAddCohort} onUpdateCohort={onUpdateCohort} onDeleteCohort={onDeleteCohort} onSetUploadCohort={onSetUploadCohort} onSetStudentsCohort={onSetStudentsCohort} onImportEligibility={onImportEligibility} onDeleteEligibility={onDeleteEligibility} onDeleteEligibilityUploadPart={onDeleteEligibilityUploadPart} onRestoreEligibilityUploadPart={onRestoreEligibilityUploadPart} onPurgeEligibilityUploadParts={onPurgeEligibilityUploadParts} resultsFiles={resultsFiles} onUploadResultsFile={onUploadResultsFile} onUpdateResultsFile={onUpdateResultsFile} onDeleteResultsFile={onDeleteResultsFile} onRestoreResultsFile={onRestoreResultsFile} onPurgeResultsFile={onPurgeResultsFile} role={role} />}
+          {page === "interviews" && <InterviewsPage role={role} eligibility={eligibility} cohorts={cohorts} />}
           {page === "expenses" && <ExpensesPage exams={exams} expenses={expenses} onSaveExpense={onSaveExpense} onDeleteExpense={onDeleteExpense} role={role} />}
           {page === "team" && <TeamRolesPage rolesList={rolesList} onSetRole={onSetRole} onRemoveRole={onRemoveRole} currentUserEmail={currentUser?.email} livePerms={livePerms} onUpdatePerm={onUpdatePerm} isSuperAdmin={role === "super_admin"} accessRequests={accessRequests} onApproveRequest={onApproveRequest} onRejectRequest={onRejectRequest} />}
         </div>
