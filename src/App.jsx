@@ -5997,7 +5997,7 @@ const BUCKET_B_TR1_COLUMNS = [
   { key: "part3Avg", label: "Part 3 Avg", group: BUCKET_B_TR1_GROUPS.part3 },
   { key: "finalScore", label: "Final Score ( out of 15 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
 ];
 
 const BUCKET_B_TR2_GROUPS = {
@@ -6025,7 +6025,7 @@ const BUCKET_B_TR2_COLUMNS = [
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score ( out of 10 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
 ];
 
 // IRP L1 — added 2026-09-24, standalone Interviews bucket (own top-level tab, no subheaders).
@@ -6070,7 +6070,7 @@ const IRP_L1_COLUMNS = [
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score" },
   { key: "interviewIntegrityScore", label: "Integrity Score" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
 ];
 
 // IRP Gen AI — added 2026-10-23, standalone Interviews bucket (own top-level tab, no subheaders).
@@ -6105,7 +6105,7 @@ const IRP_GEN_AI_COLUMNS = [
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Integrity Score" },
   { key: "verdict", label: "Verdict Band" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
 ];
 
 const BUCKET_C_GROUPS = {
@@ -6133,7 +6133,7 @@ const BUCKET_C_COLUMNS = [
   { key: "overallRemarks", label: "Overall Remarks" },
   { key: "finalScore", label: "Final Score ( out of 10 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
 ];
 
 // Each skill area gets its own color, matching the grouped-header treatment used in the
@@ -6171,7 +6171,7 @@ const FRONTEND_DEV_COLUMNS = [
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict Band" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
   // Criteria given 2026-09-14 — see frontendDevLevel.
   { key: "levels", label: "Levels" },
 ];
@@ -6213,7 +6213,7 @@ const DSA_COLUMNS = [
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict Band" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
   // Criteria given 2026-09-14 — see frontendDevLevel.
   { key: "levels", label: "Levels" },
 ];
@@ -6262,7 +6262,7 @@ const SWE_FUNDAMENTALS_COLUMNS = [
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict Band" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
   // Criteria not given yet — column added ahead of the logic, deliberately left unpopulated (no
   // row builder sets a `levels` value) so it renders "—" until defined.
   { key: "levels", label: "Levels" },
@@ -6311,7 +6311,7 @@ const BACKEND_COLUMNS = [
   { key: "finalScore", label: "Final Score ( out of 100 )" },
   { key: "interviewIntegrityScore", label: "Interview Integrity Score" },
   { key: "verdict", label: "Verdict Band" },
-  { key: "status", label: "Clearance Status" },
+  { key: "status", label: "Status" },
   // Criteria not given yet — column added ahead of the logic, deliberately left unpopulated (no
   // row builder sets a `levels` value) so it renders "—" until defined.
   { key: "levels", label: "Levels" },
@@ -6542,7 +6542,7 @@ function InterviewDataTable({ columns, rows, source, exportLabel, canDelete, onR
     <>
       {mismatchNames.length > 0 && (
         <div style={{ marginBottom: 12, fontSize: 12, color: "#92400e", background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 7, padding: "10px 14px" }}>
-          ⚠️ {mismatchNames.length} row{mismatchNames.length > 1 ? "s" : ""} {mismatchNames.length > 1 ? "have" : "has"} a status/data mismatch: {mismatchNames.join(", ")} — see the ⚠️ on Clearance Status for details.
+          ⚠️ {mismatchNames.length} row{mismatchNames.length > 1 ? "s" : ""} {mismatchNames.length > 1 ? "have" : "has"} a status/data mismatch: {mismatchNames.join(", ")} — see the ⚠️ in the Status column for details.
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12 }}>
@@ -7791,7 +7791,7 @@ function InterviewCriteriaPanel({ criteria }) {
         </table>
       </>)}
 
-      <div style={h}>Clearance Status</div>
+      <div style={h}>Status</div>
       <p style={p}>{criteria.clearance}</p>
 
       {levels && (<>
@@ -7811,7 +7811,7 @@ function InterviewCriteriaPanel({ criteria }) {
 
       <div style={h}>Other statuses</div>
       <ul style={{ ...p, paddingLeft: 18 }}>
-        <li>Interviews that aren't completed (scheduled, no_show, cancelled, …) show the Interview App's status as-is in Clearance Status.</li>
+        <li>Interviews that aren't completed (scheduled, no_show, cancelled, …) show the Interview App's status as-is in the Status column.</li>
         <li>⚠️ Status/data mismatch: feedback was submitted but the interview isn't marked completed (partially completed interviews are exempt). The scores may belong to an earlier attempt{criteria.blankOnMismatch ? ", so Verdict Band and Levels are left blank for that row" : ""}.</li>
       </ul>
     </div>
