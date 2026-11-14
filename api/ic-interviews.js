@@ -1,6 +1,15 @@
 import { adminDb } from "./_lib/firebaseAdmin.js";
 import { isExcludedCandidate, addExcludedCandidateDeletes } from "./_lib/excludedCandidates.js";
 import { requireUser } from "./_lib/auth.js";
+import { timingSafeEqual } from "node:crypto";
+
+function isCronRequest(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+  const a = Buffer.from(req.headers.authorization || "");
+  const b = Buffer.from(`Bearer ${secret}`);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 // Pulls Academy interviews directly from the Interview Coordinator App's own
 // Firestore project, using a service account scoped to it — the same
@@ -16,6 +25,10 @@ import { requireUser } from "./_lib/auth.js";
 // Interview Coordinator App's Firebase project (ask that team for it).
 //
 // POST /api/ic-interviews  (sync action — write side effect, so not a GET)
+// GET  /api/ic-interviews  — only for the daily Vercel Cron run (see vercel.json: "30 2 * * *" UTC
+// = 8:00 AM IST). Vercel Cron can only send GETs, and it sends
+// "Authorization: Bearer <CRON_SECRET>" when the CRON_SECRET env var is set; any other GET is
+// rejected, so this doesn't open a public way to trigger a sync.
 
 export const config = { maxDuration: 30 };
 
@@ -67,10 +80,14 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  const fromCron = req.method === "GET" && isCronRequest(req);
+  if (req.method !== "POST" && !fromCron) {
+    return res.status(req.method === "GET" ? 401 : 405).json({ ok: false, error: req.method === "GET" ? "Unauthorized" : "Method not allowed" });
   }
 
+  // The cron run has no signed-in user, so it skips the user + permission checks below — the
+  // CRON_SECRET match above is its authentication.
+  if (!fromCron) {
   let user;
   try {
     user = await requireUser(req);
@@ -94,6 +111,7 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("ic-interviews permission check error:", err);
     return res.status(500).json({ ok: false, error: "Failed to verify permissions" });
+  }
   }
 
   if (!process.env.IC_SA_B64) {
@@ -120,7 +138,7 @@ export default async function handler(req, res) {
     needsFullSync = !updatedAtWatermark || sinceFullSync >= FULL_SYNC_INTERVAL_MS;
     // Set before the read (not after) so two requests arriving close together both see the
     // cooldown, rather than both slipping through before either finishes.
-    await syncMetaRef.set({ lastSyncAt: new Date().toISOString() }, { merge: true });
+    await syncMetaRef.set({ lastSyncAt: new Date().toISOString(), lastSyncBy: fromCron ? "cron" : "manual" }, { merge: true });
   } catch (err) {
     console.error("ic-interviews cooldown check error:", err);
     return res.status(500).json({ ok: false, error: "Failed to sync interviews" });
@@ -221,6 +239,7 @@ export default async function handler(req, res) {
     const newWatermark = interviews.reduce((max, iv) => maxIso(max, iv.updatedAt), updatedAtWatermark);
     const metaUpdate = { updatedAtWatermark: newWatermark };
     if (needsFullSync) metaUpdate.lastFullSyncAt = syncedAt;
+    if (fromCron) metaUpdate.lastCronSyncAt = syncedAt;
     await syncMetaRef.set(metaUpdate, { merge: true });
 
     return res.status(200).json({
